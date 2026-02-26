@@ -8,12 +8,13 @@ class Detector:
         self.model.fuse()
 
     def detect(self, frame):
-        results = self.model(
+        results = self.model.track(
             frame,
             imgsz=config.IMG_SIZE,
             conf=config.CONFIDENCE,
             iou=config.IOU_THRESHOLD,
             classes=config.DETECTION_CLASSES,
-            stream=False
+            persist=True,
+            tracker="bytetrack.yaml"
         )
         return results[0]

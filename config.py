@@ -1,6 +1,14 @@
 # config.py
 
-CONFIDENCE = 0.4
+# Camera configuration
+CAMERA_SOURCE = 2
+SHOW_FPS = True
+
+# Auto-save configuration
+SAVE_CONFIDENCE = 0.5
+MOVEMENT_THRESHOLD = 30  # pixels
+
+CONFIDENCE = 0.2
 IOU_THRESHOLD = 0.5
 IMG_SIZE = 640
 

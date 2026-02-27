@@ -1,4 +1,5 @@
 import cv2
+import numpy as np
 from detection.detector import Detector
 from config import CAMERA_SOURCE, SHOW_FPS, SAVE_CONFIDENCE, MOVEMENT_THRESHOLD, WINDOW_NAME, WINDOW_MODE, WINDOW_WIDTH, WINDOW_HEIGHT, DISPLAY_SCALE, BOX_THICKNESS, FONT_SCALE, FONT_THICKNESS, FRAME_WIDTH, FRAME_HEIGHT
 from utils.fps_tracker import FPSTracker
@@ -7,6 +8,8 @@ from utils.event_logger import EventLogger
 from utils.audio import AudioManager
 from behavior.loitering import LoiteringDetector
 from behavior.conflict_detection import ConflictDetector
+from behavior.phone_behavior import PhoneBehaviorDetector
+from behavior.scoring import ThreatScorer
 import os
 import time
 from datetime import datetime
@@ -44,6 +47,8 @@ def main():
 
     abandon_detector = AbandonedObjectDetector()
     conflict_detector = ConflictDetector()
+    phone_detector = PhoneBehaviorDetector()
+    scorer = ThreatScorer()
 
     while True:
         ret, frame = cap.read()
@@ -77,37 +82,57 @@ def main():
         suspicious_ids = loiter_detector.update(tracked_objects)
         suspicious_bags = abandon_detector.update(tracked_objects)
         conflict_alert = conflict_detector.update(tracked_objects)
+        phone_results = phone_detector.update(tracked_objects)
+        scores = scorer.update(
+            tracked_objects,
+            suspicious_ids,
+            suspicious_bags,
+            conflict_alert,
+            phone_results,
+        )
 
         current_time = time.time()
 
-        if suspicious_bags:
-            last_abandon_detect_time = current_time
+        # Determine alert type based on priority
+        alert_type = None
 
+        if conflict_alert:
+            alert_type = "CONFLICT"
+        elif suspicious_bags:
+            alert_type = "ABANDONED"
+        elif any(phone_results.get(pid, {}).get("misuse", False) for pid in phone_results):
+            alert_type = "PHONE"
+
+        # Handle alert logic
+        if alert_type == "CONFLICT":
+            active_alert = "POSSIBLE PHYSICAL CONFLICT"
+            alert_start_time = current_time
+            audio_manager.start_alarm()
+            alarm_active = True
+            event_logger.log("conflict", "Possible physical conflict detected!", config.ALERT_COOLDOWN)
+
+        elif alert_type == "ABANDONED":
+            active_alert = "ABANDONED OBJECT DETECTED"
+            alert_start_time = current_time
+            last_abandon_detect_time = current_time
+            
             if not alarm_active:
                 if config.ENABLE_CONSOLE_LOG:
                     event_logger.log("abandon", "Abandoned object detected!", config.ALERT_COOLDOWN)
                 audio_manager.start_alarm()
                 alarm_active = True
 
-            active_alert = "ABANDONED OBJECT DETECTED"
+        elif alert_type == "PHONE":
+            active_alert = "SUSPICIOUS PHONE RECORDING"
             alert_start_time = current_time
+            # Optional: no alarm for phone behavior
 
         else:
-            if alarm_active:
-                if (not conflict_alert) and current_time - last_abandon_detect_time > ALARM_STABILITY_BUFFER:
-                    audio_manager.stop_alarm()
-                    alarm_active = False
-                    active_alert = None
-
-        if conflict_alert:
-            active_alert = "POSSIBLE PHYSICAL CONFLICT"
-            alert_start_time = current_time
-
-            if not alarm_active:
-                audio_manager.start_alarm()
-                alarm_active = True
-
-            event_logger.log("conflict", "Possible physical conflict detected!", config.ALERT_COOLDOWN)
+            # No alert active - stop alarm if enough time has passed
+            if alarm_active and current_time - last_abandon_detect_time > ALARM_STABILITY_BUFFER:
+                audio_manager.stop_alarm()
+                alarm_active = False
+            active_alert = None
 
         if boxes.id is not None:
             check_time = time.time()
@@ -157,8 +182,22 @@ def main():
                     color = (0, 0, 255)
                 if obj_id in suspicious_bags:
                     color = (0, 0, 255)
-                cv2.rectangle(frame_copy, (int(x1), int(y1)), (int(x2), int(y2)), color, BOX_THICKNESS)
                 label = f"{class_name} ID:{obj_id}"
+
+                if obj_id in phone_results:
+                    phone_state = phone_results[obj_id]["state"]
+                    misuse = phone_results[obj_id]["misuse"]
+
+                    label += f" | Phone: {phone_state}"
+
+                    if misuse:
+                        color = (0, 165, 255)
+
+                if cls == config.PERSON and obj_id in scores:
+                    level = scorer.get_level(scores[obj_id])
+                    label += f" | Threat: {level}"
+
+                cv2.rectangle(frame_copy, (int(x1), int(y1)), (int(x2), int(y2)), color, BOX_THICKNESS)
                 cv2.putText(frame_copy, label, (int(x1), int(y1)-10),
                             cv2.FONT_HERSHEY_SIMPLEX, FONT_SCALE, color, FONT_THICKNESS)
 
@@ -198,6 +237,69 @@ def main():
                 )
             else:
                 active_alert = None
+
+        # Create extended canvas for camera preview + side panel
+        panel_width = 350
+        h, w, _ = frame_copy.shape
+        extended_frame = np.zeros((h, w + panel_width, 3), dtype=np.uint8)
+        
+        # Copy camera preview to left side
+        extended_frame[:, :w] = frame_copy
+        
+        # Draw dark panel background on right side
+        extended_frame[:, w:] = (30, 30, 30)
+
+        # Draw panel content on the right side
+        panel_x = w  # Start of panel area
+        
+        y_offset = 40
+        cv2.putText(
+            extended_frame,
+            "RISK PANEL",
+            (panel_x + 20, 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (0, 255, 255),
+            2,
+        )
+
+        for pid, score in scores.items():
+            level = scorer.get_level(score)
+            text = f"ID {pid}: {level} ({score})"
+
+            color = (0, 255, 0)
+            if level == "SUSPICIOUS":
+                color = (0, 165, 255)
+            elif level == "HIGH":
+                color = (0, 0, 255)
+
+            cv2.putText(
+                extended_frame,
+                text,
+                (panel_x + 20, y_offset),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                color,
+                2,
+            )
+            y_offset += 30
+
+        recent = event_logger.timeline[-3:]
+        event_y = h - 100
+        for _, msg in recent:
+            cv2.putText(
+                extended_frame,
+                msg,
+                (panel_x + 20, event_y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (255, 255, 255),
+                1,
+            )
+            event_y += 20
+        
+        # Use extended frame as the display frame
+        frame_copy = extended_frame
 
         display_frame = frame_copy
         if DISPLAY_SCALE != 1.0:

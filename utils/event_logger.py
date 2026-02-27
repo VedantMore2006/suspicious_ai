@@ -4,6 +4,7 @@ import time
 class EventLogger:
     def __init__(self):
         self.last_events = {}
+        self.timeline = []
 
     def log(self, event_type, message, cooldown=5):
         current_time = time.time()
@@ -14,3 +15,4 @@ class EventLogger:
         if current_time - self.last_events[event_type] > cooldown:
             print(f"[ALERT] {message}")
             self.last_events[event_type] = current_time
+            self.timeline.append((current_time, message))

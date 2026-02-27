@@ -19,7 +19,9 @@ suspicious_ai/
 ├── behavior/
 │   ├── __init__.py
 │   ├── abandoned_object.py
+│   ├── conflict_detection.py
 │   ├── loitering.py
+│   ├── phone_behavior.py
 │   ├── phone_usage.py
 │   └── scoring.py
 ├── data/
@@ -28,6 +30,9 @@ suspicious_ai/
 ├── detection/
 │   ├── __init__.py
 │   └── detector.py
+├── saves/
+│   ├── fps_data.csv
+│   └── fps_plot.png
 └── utils/
     ├── __init__.py
     ├── audio.py
@@ -75,10 +80,13 @@ class AbandonedObjectDetector:
             elif obj["class"] in [config.BACKPACK, config.HANDBAG, config.SUITCASE]:
                 bags.append(obj)
 
+        active_bag_ids = []
+
         for bag in bags:
             bag_id = bag["id"]
-            bag_center = get_center(bag["bbox"])
+            active_bag_ids.append(bag_id)
 
+            bag_center = get_center(bag["bbox"])
             nearest_person_dist = float("inf")
 
             for person in persons:
@@ -89,29 +97,140 @@ class AbandonedObjectDetector:
 
             if bag_id not in self.bag_state:
                 self.bag_state[bag_id] = {
-                    "first_seen": current_time,
+                    "last_seen": current_time,
                     "last_near_time": current_time,
                     "abandoned": False
                 }
 
             state = self.bag_state[bag_id]
+            state["last_seen"] = current_time
 
+            # If someone is near bag
             if nearest_person_dist < config.ABANDON_DISTANCE:
                 state["last_near_time"] = current_time
                 state["abandoned"] = False
+
             else:
                 time_away = current_time - state["last_near_time"]
+
                 if time_away > config.ABANDON_TIME:
                     state["abandoned"] = True
-                    suspicious_bags.append(bag_id)
 
-        # Cleanup removed bags
-        active_bag_ids = [bag["id"] for bag in bags]
+            if state["abandoned"]:
+                suspicious_bags.append(bag_id)
+
+        # Grace period for flicker (IMPORTANT)
+        GRACE_PERIOD = 0.7  # seconds
+
         for saved_id in list(self.bag_state.keys()):
-            if saved_id not in active_bag_ids:
+            state = self.bag_state[saved_id]
+
+            # If bag not seen recently
+            if current_time - state["last_seen"] > GRACE_PERIOD:
                 del self.bag_state[saved_id]
 
         return suspicious_bags
+
+================================================================================
+FILE: behavior/conflict_detection.py
+================================================================================
+
+import config
+import time
+import math
+
+
+class ConflictDetector:
+    def __init__(self):
+        self.history = {}
+        self.confirm_counter = 0
+
+    def compute_center(self, bbox):
+        x1, y1, x2, y2 = bbox
+        return ((x1 + x2) / 2, (y1 + y2) / 2)
+
+    def compute_area(self, bbox):
+        x1, y1, x2, y2 = bbox
+        return (x2 - x1) * (y2 - y1)
+
+    def update(self, tracked_objects):
+        if not config.ENABLE_CONFLICT_DETECTION:
+            return False
+
+        persons = [obj for obj in tracked_objects if obj["class"] == config.PERSON]
+
+        if len(persons) < 2:
+            self.confirm_counter = 0
+            return False
+
+        current_time = time.time()
+        conflict = False
+
+        for i in range(len(persons)):
+            for j in range(i + 1, len(persons)):
+
+                idA = persons[i]["id"]
+                idB = persons[j]["id"]
+
+                centerA = self.compute_center(persons[i]["bbox"])
+                centerB = self.compute_center(persons[j]["bbox"])
+
+                areaA = self.compute_area(persons[i]["bbox"])
+                areaB = self.compute_area(persons[j]["bbox"])
+
+                distance = math.hypot(centerA[0] - centerB[0], centerA[1] - centerB[1])
+
+                if distance > config.PROXIMITY_DISTANCE:
+                    continue
+
+                pair_key = tuple(sorted((idA, idB)))
+
+                if pair_key not in self.history:
+                    self.history[pair_key] = {
+                        "prev_distance": distance,
+                        "prev_velocity": 0,
+                        "prev_areaA": areaA,
+                        "prev_areaB": areaB,
+                        "prev_time": current_time
+                    }
+                    continue
+
+                prev = self.history[pair_key]
+
+                dt = current_time - prev["prev_time"]
+                if dt == 0:
+                    continue
+
+                velocity = (distance - prev["prev_distance"]) / dt
+                acceleration = (velocity - prev["prev_velocity"]) / dt
+
+                area_changeA = abs(areaA - prev["prev_areaA"]) / (prev["prev_areaA"] + 1e-5)
+                area_changeB = abs(areaB - prev["prev_areaB"]) / (prev["prev_areaB"] + 1e-5)
+
+                if (
+                    abs(velocity) > config.DISTANCE_VELOCITY_THRESHOLD
+                    and abs(acceleration) > config.ACCELERATION_THRESHOLD
+                ) or (
+                    area_changeA > config.AREA_CHANGE_THRESHOLD
+                    or area_changeB > config.AREA_CHANGE_THRESHOLD
+                ):
+                    conflict = True
+
+                self.history[pair_key] = {
+                    "prev_distance": distance,
+                    "prev_velocity": velocity,
+                    "prev_areaA": areaA,
+                    "prev_areaB": areaB,
+                    "prev_time": current_time
+                }
+
+        if conflict:
+            self.confirm_counter += 1
+        else:
+            self.confirm_counter = 0
+
+        return self.confirm_counter >= config.CONFLICT_CONFIRM_FRAMES
+
 
 ================================================================================
 FILE: behavior/loitering.py
@@ -172,6 +291,111 @@ class LoiteringDetector:
         return suspicious_ids
 
 ================================================================================
+FILE: behavior/phone_behavior.py
+================================================================================
+
+import config
+import time
+import math
+
+
+class PhoneBehaviorDetector:
+    def __init__(self):
+        self.prev_phone_positions = {}
+        self.confirm_counter = {}
+
+    def get_vertical_zone(self, phone_center_y, person_bbox):
+        x1, y1, x2, y2 = person_bbox
+        height = y2 - y1
+
+        relative_y = phone_center_y - y1
+        ratio = relative_y / height
+
+        if ratio < config.PHONE_FACE_ZONE:
+            return "ACTIVE"
+        elif ratio < config.PHONE_TORSO_ZONE:
+            return "HOLDING"
+        else:
+            return "POCKET"
+
+    def update(self, tracked_objects):
+
+        if not config.ENABLE_PHONE_BEHAVIOR:
+            return {}
+
+        persons = [o for o in tracked_objects if o["class"] == config.PERSON]
+        phones = [o for o in tracked_objects if o["class"] == config.CELL_PHONE]
+
+        results = {}
+        current_time = time.time()
+
+        for person in persons:
+            pid = person["id"]
+            px1, py1, px2, py2 = person["bbox"]
+            person_center_x = (px1 + px2) / 2
+
+            nearest_phone = None
+            min_dist = float("inf")
+
+            for phone in phones:
+                fx1, fy1, fx2, fy2 = phone["bbox"]
+                phone_center = ((fx1 + fx2) / 2, (fy1 + fy2) / 2)
+
+                # simple horizontal proximity check
+                if px1 <= phone_center[0] <= px2:
+                    dist = abs(phone_center[0] - person_center_x)
+                    if dist < min_dist:
+                        min_dist = dist
+                        nearest_phone = phone
+
+            if nearest_phone is None:
+                continue
+
+            fx1, fy1, fx2, fy2 = nearest_phone["bbox"]
+            phone_center = ((fx1 + fx2) / 2, (fy1 + fy2) / 2)
+
+            state = self.get_vertical_zone(phone_center[1], person["bbox"])
+
+            misuse = False
+
+            # Detect rapid phone raise (possible recording)
+            if pid in self.prev_phone_positions:
+                prev = self.prev_phone_positions[pid]
+                dt = current_time - prev["time"]
+
+                if dt > 0:
+                    velocity_y = (prev["pos"][1] - phone_center[1]) / dt
+
+                    if velocity_y > config.PHONE_RAISE_SPEED_THRESHOLD:
+                        misuse = True
+
+            self.prev_phone_positions[pid] = {
+                "pos": phone_center,
+                "time": current_time
+            }
+
+            # Confirmation logic
+            if misuse:
+                if pid not in self.confirm_counter:
+                    self.confirm_counter[pid] = 0
+                self.confirm_counter[pid] += 1
+            else:
+                self.confirm_counter[pid] = 0
+
+            if self.confirm_counter.get(pid, 0) >= config.PHONE_MISUSE_CONFIRM_FRAMES:
+                misuse = True
+            else:
+                misuse = False
+
+            results[pid] = {
+                "state": state,
+                "misuse": misuse
+            }
+
+        return results
+
+
+================================================================================
 FILE: behavior/phone_usage.py
 ================================================================================
 
@@ -181,7 +405,44 @@ FILE: behavior/phone_usage.py
 FILE: behavior/scoring.py
 ================================================================================
 
+import config
 
+
+class ThreatScorer:
+    def __init__(self):
+        self.scores = {}
+
+    def update(self, tracked_objects, loiter_ids, abandoned_bags, conflict_flag, phone_results):
+        persons = [o for o in tracked_objects if o["class"] == config.PERSON]
+
+        for person in persons:
+            pid = person["id"]
+            score = 0
+
+            if pid in loiter_ids:
+                score += 1
+
+            if conflict_flag:
+                score += 4
+
+            if pid in phone_results and phone_results[pid]["misuse"]:
+                score += 2
+
+            # optional: proximity to abandoned bag
+            if abandoned_bags:
+                score += 2
+
+            self.scores[pid] = score
+
+        return self.scores
+
+    def get_level(self, score):
+        if score >= 5:
+            return "HIGH"
+        elif score >= 3:
+            return "SUSPICIOUS"
+        else:
+            return "NORMAL"
 
 ================================================================================
 FILE: config.py
@@ -218,12 +479,16 @@ FONT_SCALE = 0.7
 FONT_THICKNESS = 2
 
 # Auto-save configuration
+SAVE_FRAMES = False
 SAVE_CONFIDENCE = 0.5
 MOVEMENT_THRESHOLD = 30  # pixels
 
 CONFIDENCE = 0.2
 IOU_THRESHOLD = 0.5
 IMG_SIZE = 416
+# IMG_SIZE = 640
+# IMG_SIZE = 256
+# IMG_SIZE = 320
 
 # Classes (COCO indices)
 PERSON = 0
@@ -236,12 +501,24 @@ DETECTION_CLASSES = [PERSON, BACKPACK, HANDBAG, SUITCASE, CELL_PHONE]
 
 # Behavior thresholds
 LOITER_TIME = 3
-LOITER_MOVEMENT_THRESHOLD = 100
+LOITER_MOVEMENT_THRESHOLD = 30
 
-ABANDON_TIME = 5
-ABANDON_DISTANCE = 120
-
+ABANDON_TIME = 10
+ABANDON_DISTANCE = 130
+GRACE_PERIOD = 0.7
 PHONE_TIME = 5
+
+# ===============================
+# PHONE BEHAVIOR CONFIG
+# ===============================
+
+PHONE_FACE_ZONE = 0.3
+PHONE_TORSO_ZONE = 0.6
+
+PHONE_RAISE_SPEED_THRESHOLD = 80  # pixels/sec
+PHONE_MISUSE_CONFIRM_FRAMES = 3
+
+ENABLE_PHONE_BEHAVIOR = True
 
 SUSPICION_THRESHOLD = 3
 
@@ -259,6 +536,18 @@ ALERT_BANNER_DURATION = 3  # seconds
 ENABLE_BEEP = True
 ALERT_SOUND_PATH = "/home/vedant/suspicious_ai/assets/alert.mp3"
 AUDIO_VOLUME = 0.8
+
+# ===============================
+# ADVANCED CONFLICT DETECTION
+# ===============================
+
+ENABLE_CONFLICT_DETECTION = True
+
+PROXIMITY_DISTANCE = 200  # pixels
+DISTANCE_VELOCITY_THRESHOLD = 30  # pixels/second
+ACCELERATION_THRESHOLD = 30
+AREA_CHANGE_THRESHOLD = 0.20  # 25%
+CONFLICT_CONFIRM_FRAMES = 2
 
 ================================================================================
 FILE: data/__init__.py
@@ -457,6 +746,9 @@ from utils.drawing import setup_window
 from utils.event_logger import EventLogger
 from utils.audio import AudioManager
 from behavior.loitering import LoiteringDetector
+from behavior.conflict_detection import ConflictDetector
+from behavior.phone_behavior import PhoneBehaviorDetector
+from behavior.scoring import ThreatScorer
 import os
 import time
 from datetime import datetime
@@ -493,6 +785,9 @@ def main():
     last_save_time = {}
 
     abandon_detector = AbandonedObjectDetector()
+    conflict_detector = ConflictDetector()
+    phone_detector = PhoneBehaviorDetector()
+    scorer = ThreatScorer()
 
     while True:
         ret, frame = cap.read()
@@ -525,27 +820,58 @@ def main():
 
         suspicious_ids = loiter_detector.update(tracked_objects)
         suspicious_bags = abandon_detector.update(tracked_objects)
+        conflict_alert = conflict_detector.update(tracked_objects)
+        phone_results = phone_detector.update(tracked_objects)
+        scores = scorer.update(
+            tracked_objects,
+            suspicious_ids,
+            suspicious_bags,
+            conflict_alert,
+            phone_results,
+        )
 
         current_time = time.time()
 
-        if suspicious_bags:
-            last_abandon_detect_time = current_time
+        # Determine alert type based on priority
+        alert_type = None
 
+        if conflict_alert:
+            alert_type = "CONFLICT"
+        elif suspicious_bags:
+            alert_type = "ABANDONED"
+        elif any(phone_results.get(pid, {}).get("misuse", False) for pid in phone_results):
+            alert_type = "PHONE"
+
+        # Handle alert logic
+        if alert_type == "CONFLICT":
+            active_alert = "POSSIBLE PHYSICAL CONFLICT"
+            alert_start_time = current_time
+            audio_manager.start_alarm()
+            alarm_active = True
+            event_logger.log("conflict", "Possible physical conflict detected!", config.ALERT_COOLDOWN)
+
+        elif alert_type == "ABANDONED":
+            active_alert = "ABANDONED OBJECT DETECTED"
+            alert_start_time = current_time
+            last_abandon_detect_time = current_time
+            
             if not alarm_active:
                 if config.ENABLE_CONSOLE_LOG:
                     event_logger.log("abandon", "Abandoned object detected!", config.ALERT_COOLDOWN)
                 audio_manager.start_alarm()
                 alarm_active = True
 
-            active_alert = "ABANDONED OBJECT DETECTED"
+        elif alert_type == "PHONE":
+            active_alert = "SUSPICIOUS PHONE RECORDING"
             alert_start_time = current_time
+            # Optional: no alarm for phone behavior
 
         else:
-            if alarm_active:
-                if current_time - last_abandon_detect_time > ALARM_STABILITY_BUFFER:
-                    audio_manager.stop_alarm()
-                    alarm_active = False
-                    active_alert = None
+            # No alert active - stop alarm if enough time has passed
+            if alarm_active and current_time - last_abandon_detect_time > ALARM_STABILITY_BUFFER:
+                audio_manager.stop_alarm()
+                alarm_active = False
+            active_alert = None
 
         if boxes.id is not None:
             check_time = time.time()
@@ -558,7 +884,7 @@ def main():
                 cls = classes[i]
                 class_name = results.names[cls]
 
-                if confidences[i] > SAVE_CONFIDENCE:
+                if config.SAVE_FRAMES and confidences[i] > SAVE_CONFIDENCE:
                     # Calculate center position
                     center_x = (x1 + x2) / 2
                     center_y = (y1 + y2) / 2
@@ -595,13 +921,27 @@ def main():
                     color = (0, 0, 255)
                 if obj_id in suspicious_bags:
                     color = (0, 0, 255)
-                cv2.rectangle(frame_copy, (int(x1), int(y1)), (int(x2), int(y2)), color, BOX_THICKNESS)
                 label = f"{class_name} ID:{obj_id}"
+
+                if obj_id in phone_results:
+                    phone_state = phone_results[obj_id]["state"]
+                    misuse = phone_results[obj_id]["misuse"]
+
+                    label += f" | Phone: {phone_state}"
+
+                    if misuse:
+                        color = (0, 165, 255)
+
+                if cls == config.PERSON and obj_id in scores:
+                    level = scorer.get_level(scores[obj_id])
+                    label += f" | Threat: {level}"
+
+                cv2.rectangle(frame_copy, (int(x1), int(y1)), (int(x2), int(y2)), color, BOX_THICKNESS)
                 cv2.putText(frame_copy, label, (int(x1), int(y1)-10),
                             cv2.FONT_HERSHEY_SIMPLEX, FONT_SCALE, color, FONT_THICKNESS)
 
             # Save frame with bounding boxes if needed
-            if save_frame and detected_objects:
+            if config.SAVE_FRAMES and save_frame and detected_objects:
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
                 objects_str = "_".join(detected_objects)
                 filename = os.path.join(save_dir, f"detected_{objects_str}_{timestamp}.jpg")
@@ -636,6 +976,57 @@ def main():
                 )
             else:
                 active_alert = None
+
+        panel_width = 300
+        h, w, _ = frame_copy.shape
+
+        cv2.rectangle(frame_copy, (w - panel_width, 0), (w, h), (30, 30, 30), -1)
+
+        y_offset = 40
+        cv2.putText(
+            frame_copy,
+            "RISK PANEL",
+            (w - panel_width + 20, 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (0, 255, 255),
+            2,
+        )
+
+        for pid, score in scores.items():
+            level = scorer.get_level(score)
+            text = f"ID {pid}: {level} ({score})"
+
+            color = (0, 255, 0)
+            if level == "SUSPICIOUS":
+                color = (0, 165, 255)
+            elif level == "HIGH":
+                color = (0, 0, 255)
+
+            cv2.putText(
+                frame_copy,
+                text,
+                (w - panel_width + 20, y_offset),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                color,
+                2,
+            )
+            y_offset += 30
+
+        recent = event_logger.timeline[-3:]
+        event_y = h - 100
+        for _, msg in recent:
+            cv2.putText(
+                frame_copy,
+                msg,
+                (w - panel_width + 20, event_y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (255, 255, 255),
+                1,
+            )
+            event_y += 20
 
         display_frame = frame_copy
         if DISPLAY_SCALE != 1.0:
@@ -750,6 +1141,7 @@ import time
 class EventLogger:
     def __init__(self):
         self.last_events = {}
+        self.timeline = []
 
     def log(self, event_type, message, cooldown=5):
         current_time = time.time()
@@ -760,6 +1152,7 @@ class EventLogger:
         if current_time - self.last_events[event_type] > cooldown:
             print(f"[ALERT] {message}")
             self.last_events[event_type] = current_time
+            self.timeline.append((current_time, message))
 
 
 ================================================================================
@@ -866,5 +1259,5 @@ def distance(p1, p2):
     return math.hypot(p1[0] - p2[0], p1[1] - p2[1])
 
 ================================================================================
-SUMMARY: 19 Python files extracted
+SUMMARY: 21 Python files extracted
 ================================================================================

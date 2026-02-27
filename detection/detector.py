@@ -8,6 +8,7 @@ class Detector:
         self.model.fuse()
 
     def detect(self, frame):
+        # Track objects with configured thresholds and no console spam
         results = self.model.track(
             frame,
             imgsz=config.IMG_SIZE,
@@ -15,6 +16,7 @@ class Detector:
             iou=config.IOU_THRESHOLD,
             classes=config.DETECTION_CLASSES,
             persist=True,
-            tracker="bytetrack.yaml"
+            tracker="bytetrack.yaml",
+            verbose=False,
         )
         return results[0]

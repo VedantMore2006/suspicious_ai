@@ -1,8 +1,10 @@
 import cv2
 from detection.detector import Detector
-from config import CAMERA_SOURCE, SHOW_FPS, SAVE_CONFIDENCE, MOVEMENT_THRESHOLD, WINDOW_NAME, WINDOW_MODE, WINDOW_WIDTH, WINDOW_HEIGHT, DISPLAY_SCALE, BOX_THICKNESS, FONT_SCALE, FONT_THICKNESS
+from config import CAMERA_SOURCE, SHOW_FPS, SAVE_CONFIDENCE, MOVEMENT_THRESHOLD, WINDOW_NAME, WINDOW_MODE, WINDOW_WIDTH, WINDOW_HEIGHT, DISPLAY_SCALE, BOX_THICKNESS, FONT_SCALE, FONT_THICKNESS, FRAME_WIDTH, FRAME_HEIGHT
 from utils.fps_tracker import FPSTracker
 from utils.drawing import setup_window
+from utils.event_logger import EventLogger
+from utils.audio import AudioManager
 from behavior.loitering import LoiteringDetector
 import os
 import time
@@ -15,6 +17,10 @@ def main():
     cap = cv2.VideoCapture(CAMERA_SOURCE)
     detector = Detector()
     loiter_detector = LoiteringDetector()
+    event_logger = EventLogger()
+    audio_manager = AudioManager()
+    active_alert = None
+    alert_start_time = 0
     
     # Setup window based on configuration
     setup_window()
@@ -39,7 +45,7 @@ def main():
         if not ret:
             break
 
-        frame = cv2.resize(frame, (WINDOW_WIDTH, WINDOW_HEIGHT))
+        frame = cv2.resize(frame, (FRAME_WIDTH, FRAME_HEIGHT))
         results = detector.detect(frame)
         
         boxes = results.boxes
@@ -65,6 +71,17 @@ def main():
 
         suspicious_ids = loiter_detector.update(tracked_objects)
         suspicious_bags = abandon_detector.update(tracked_objects)
+
+        current_time = time.time()
+
+        if suspicious_bags:
+            active_alert = "ABANDONED OBJECT DETECTED"
+            alert_start_time = current_time
+
+            if config.ENABLE_CONSOLE_LOG:
+                event_logger.log("abandon", "Abandoned object detected!", config.ALERT_COOLDOWN)
+
+            audio_manager.play_alert()
 
         if boxes.id is not None:
             check_time = time.time()
@@ -137,6 +154,25 @@ def main():
             cv2.putText(frame_copy, f"FPS: {fps:.1f} (Avg: {avg_fps:.1f})", (20, 40),
                        cv2.FONT_HERSHEY_SIMPLEX, FONT_SCALE, (0, 255, 0), FONT_THICKNESS)
 
+        # Draw alert banner when active
+        if config.SHOW_ALERT_BANNER and active_alert:
+            if time.time() - alert_start_time < config.ALERT_BANNER_DURATION:
+                overlay = frame_copy.copy()
+                cv2.rectangle(overlay, (0, 0), (frame_copy.shape[1], 80), (0, 0, 255), -1)
+                cv2.addWeighted(overlay, 0.6, frame_copy, 0.4, 0, frame_copy)
+
+                cv2.putText(
+                    frame_copy,
+                    active_alert,
+                    (50, 50),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1.2,
+                    (255, 255, 255),
+                    3
+                )
+            else:
+                active_alert = None
+
         display_frame = frame_copy
         if DISPLAY_SCALE != 1.0:
             display_frame = cv2.resize(
@@ -151,8 +187,8 @@ def main():
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
-    # Save final FPS plot before exiting
-    fps_tracker.save_plot()
+    # Save FPS data and plot at the end of session
+    fps_tracker.finalize()
     
     cap.release()
     cv2.destroyAllWindows()

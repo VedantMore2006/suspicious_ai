@@ -2,6 +2,7 @@ import matplotlib.pyplot as plt
 import time
 from collections import deque
 import os
+import csv
 
 
 class FPSTracker:
@@ -10,8 +11,8 @@ class FPSTracker:
         self.time_history = deque(maxlen=max_samples)
         self.start_time = time.time()
         self.save_dir = save_dir
-        self.last_plot_save = time.time()
-        self.plot_save_interval = 30  # Save plot every 30 seconds
+        self.csv_file = os.path.join(save_dir, 'fps_data.csv')
+        self.plot_file = os.path.join(save_dir, 'fps_plot.png')
         
         if not os.path.exists(save_dir):
             os.makedirs(save_dir)
@@ -21,11 +22,19 @@ class FPSTracker:
         current_time = time.time() - self.start_time
         self.fps_history.append(fps)
         self.time_history.append(current_time)
+    
+    def save_csv(self):
+        """Save FPS data to CSV file"""
+        if len(self.fps_history) == 0:
+            return
         
-        # Auto-save plot periodically
-        if time.time() - self.last_plot_save >= self.plot_save_interval:
-            self.save_plot()
-            self.last_plot_save = time.time()
+        with open(self.csv_file, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['Time (seconds)', 'FPS'])
+            for time_val, fps_val in zip(self.time_history, self.fps_history):
+                writer.writerow([f'{time_val:.2f}', f'{fps_val:.1f}'])
+        
+        print(f"FPS data saved: {self.csv_file}")
     
     def save_plot(self):
         """Generate and save FPS plot"""
@@ -51,10 +60,14 @@ class FPSTracker:
         
         plt.tight_layout()
         
-        filename = os.path.join(self.save_dir, f'fps_plot_{int(time.time())}.png')
-        plt.savefig(filename, dpi=100)
+        plt.savefig(self.plot_file, dpi=100)
         plt.close()
-        print(f"FPS plot saved: {filename}")
+        print(f"FPS plot saved: {self.plot_file}")
+    
+    def finalize(self):
+        """Save CSV and plot at the end of session"""
+        self.save_csv()
+        self.save_plot()
     
     def get_average_fps(self):
         """Get current average FPS"""

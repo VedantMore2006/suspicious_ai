@@ -1,0 +1,738 @@
+================================================================================
+PROJECT EXTRACTION REPORT
+================================================================================
+
+PROJECT STRUCTURE:
+--------------------------------------------------------------------------------
+
+suspicious_ai/
+├── config.py
+├── extract_project.py
+├── main.py
+├── project_extraction.txt
+├── requirements.txt
+├── suspicious_behavior_detection.md
+├── todo
+├── yolov8n.pt
+├── behavior/
+│   ├── __init__.py
+│   ├── abandoned_object.py
+│   ├── loitering.py
+│   ├── phone_usage.py
+│   └── scoring.py
+├── data/
+│   ├── __init__.py
+│   └── class_map.py
+├── detection/
+│   ├── __init__.py
+│   └── detector.py
+└── utils/
+    ├── __init__.py
+    ├── drawing.py
+    ├── fps.py
+    ├── fps_tracker.py
+    └── geometry.py
+
+
+================================================================================
+FILE CONTENTS
+================================================================================
+
+
+================================================================================
+FILE: behavior/__init__.py
+================================================================================
+
+
+
+================================================================================
+FILE: behavior/abandoned_object.py
+================================================================================
+
+import time
+import config
+from utils.geometry import get_center, distance
+
+
+class AbandonedObjectDetector:
+    def __init__(self):
+        self.bag_state = {}
+
+    def update(self, tracked_objects):
+        current_time = time.time()
+        suspicious_bags = []
+
+        persons = []
+        bags = []
+
+        for obj in tracked_objects:
+            if obj["class"] == config.PERSON:
+                persons.append(obj)
+            elif obj["class"] in [config.BACKPACK, config.HANDBAG, config.SUITCASE]:
+                bags.append(obj)
+
+        for bag in bags:
+            bag_id = bag["id"]
+            bag_center = get_center(bag["bbox"])
+
+            nearest_person_dist = float("inf")
+
+            for person in persons:
+                person_center = get_center(person["bbox"])
+                dist = distance(bag_center, person_center)
+                if dist < nearest_person_dist:
+                    nearest_person_dist = dist
+
+            if bag_id not in self.bag_state:
+                self.bag_state[bag_id] = {
+                    "first_seen": current_time,
+                    "last_near_time": current_time,
+                    "abandoned": False
+                }
+
+            state = self.bag_state[bag_id]
+
+            if nearest_person_dist < config.ABANDON_DISTANCE:
+                state["last_near_time"] = current_time
+                state["abandoned"] = False
+            else:
+                time_away = current_time - state["last_near_time"]
+                if time_away > config.ABANDON_TIME:
+                    state["abandoned"] = True
+                    suspicious_bags.append(bag_id)
+
+        # Cleanup removed bags
+        active_bag_ids = [bag["id"] for bag in bags]
+        for saved_id in list(self.bag_state.keys()):
+            if saved_id not in active_bag_ids:
+                del self.bag_state[saved_id]
+
+        return suspicious_bags
+
+================================================================================
+FILE: behavior/loitering.py
+================================================================================
+
+import time
+import config
+from utils.geometry import get_center, distance
+
+
+class LoiteringDetector:
+    def __init__(self):
+        self.person_state = {}
+
+    def update(self, tracked_objects):
+        current_time = time.time()
+        suspicious_ids = []
+
+        for obj in tracked_objects:
+            obj_id = obj["id"]
+            cls = obj["class"]
+            bbox = obj["bbox"]
+
+            if cls != config.PERSON:
+                continue
+
+            cx, cy = get_center(bbox)
+
+            if obj_id not in self.person_state:
+                self.person_state[obj_id] = {
+                    "first_seen": current_time,
+                    "last_position": (cx, cy),
+                    "last_move_time": current_time,
+                    "loiter_flag": False
+                }
+                continue
+
+            state = self.person_state[obj_id]
+            prev_pos = state["last_position"]
+
+            move_dist = distance(prev_pos, (cx, cy))
+
+            if move_dist > config.LOITER_MOVEMENT_THRESHOLD:
+                state["last_move_time"] = current_time
+                state["last_position"] = (cx, cy)
+
+            stationary_time = current_time - state["last_move_time"]
+
+            if stationary_time > config.LOITER_TIME:
+                state["loiter_flag"] = True
+                suspicious_ids.append(obj_id)
+
+        active_ids = [obj["id"] for obj in tracked_objects]
+        for saved_id in list(self.person_state.keys()):
+            if saved_id not in active_ids:
+                del self.person_state[saved_id]
+
+        return suspicious_ids
+
+================================================================================
+FILE: behavior/phone_usage.py
+================================================================================
+
+
+
+================================================================================
+FILE: behavior/scoring.py
+================================================================================
+
+
+
+================================================================================
+FILE: config.py
+================================================================================
+
+# config.py
+
+# Camera configuration
+CAMERA_SOURCE = 0
+SHOW_FPS = True
+
+FRAME_WIDTH = 640
+FRAME_HEIGHT = 480
+
+# ===============================
+# DISPLAY CONFIGURATION
+# ===============================
+
+WINDOW_NAME = "Suspicious Behavior Detector"
+
+# Modes: "normal", "resizable", "maximized", "fullscreen"
+WINDOW_MODE = "fullscreen"
+
+# Used only if mode == "resizable"
+WINDOW_WIDTH = 1200
+WINDOW_HEIGHT = 800
+
+# Scale factor applied ONLY to display (not detection)
+DISPLAY_SCALE = 1.0  # 1.0 = original, 1.5 = 150%, etc.
+
+# Drawing appearance
+BOX_THICKNESS = 2
+FONT_SCALE = 0.7
+FONT_THICKNESS = 2
+
+# Auto-save configuration
+SAVE_CONFIDENCE = 0.5
+MOVEMENT_THRESHOLD = 30  # pixels
+
+CONFIDENCE = 0.2
+IOU_THRESHOLD = 0.5
+IMG_SIZE = 416
+
+# Classes (COCO indices)
+PERSON = 0
+BACKPACK = 24
+HANDBAG = 26
+SUITCASE = 28
+CELL_PHONE = 67
+
+DETECTION_CLASSES = [PERSON, BACKPACK, HANDBAG, SUITCASE, CELL_PHONE]
+
+# Behavior thresholds
+LOITER_TIME = 8
+LOITER_MOVEMENT_THRESHOLD = 15
+
+ABANDON_TIME = 5
+ABANDON_DISTANCE = 120
+
+PHONE_TIME = 5
+
+SUSPICION_THRESHOLD = 3
+
+================================================================================
+FILE: data/__init__.py
+================================================================================
+
+
+
+================================================================================
+FILE: data/class_map.py
+================================================================================
+
+
+
+================================================================================
+FILE: detection/__init__.py
+================================================================================
+
+
+
+================================================================================
+FILE: detection/detector.py
+================================================================================
+
+from ultralytics import YOLO
+import config
+
+
+class Detector:
+    def __init__(self, model_path="yolov8n.pt"):
+        self.model = YOLO(model_path)
+        self.model.fuse()
+
+    def detect(self, frame):
+        results = self.model.track(
+            frame,
+            imgsz=config.IMG_SIZE,
+            conf=config.CONFIDENCE,
+            iou=config.IOU_THRESHOLD,
+            classes=config.DETECTION_CLASSES,
+            persist=True,
+            tracker="bytetrack.yaml"
+        )
+        return results[0]
+
+================================================================================
+FILE: extract_project.py
+================================================================================
+
+#!/usr/bin/env python3
+"""
+Extract all Python files with their content and project structure into a single text file.
+"""
+
+import os
+import sys
+from pathlib import Path
+
+
+def get_project_structure(root_dir, prefix="", max_depth=10, current_depth=0, ignore_dirs=None):
+    """Generate a text representation of the project structure."""
+    if ignore_dirs is None:
+        ignore_dirs = {".git", "__pycache__", ".pytest_cache", "*.egg-info", ".venv", "venv", "env"}
+    
+    if current_depth >= max_depth:
+        return ""
+    
+    structure = ""
+    try:
+        items = sorted(os.listdir(root_dir))
+    except PermissionError:
+        return ""
+    
+    dirs = []
+    files = []
+    
+    for item in items:
+        # Skip hidden files/dirs and common ignore patterns
+        if item.startswith("."):
+            continue
+        if item in ignore_dirs or any(item.endswith(x.replace("*", "")) for x in ignore_dirs if "*" in x):
+            continue
+        
+        item_path = os.path.join(root_dir, item)
+        if os.path.isdir(item_path):
+            dirs.append(item)
+        else:
+            files.append(item)
+    
+    # Add files first
+    for i, file in enumerate(files):
+        is_last_file = (i == len(files) - 1) and len(dirs) == 0
+        structure += f"{prefix}{'└── ' if is_last_file else '├── '}{file}\n"
+    
+    # Add directories
+    for i, dir_name in enumerate(dirs):
+        is_last = i == len(dirs) - 1
+        structure += f"{prefix}{'└── ' if is_last else '├── '}{dir_name}/\n"
+        
+        dir_path = os.path.join(root_dir, dir_name)
+        extension = "    " if is_last else "│   "
+        structure += get_project_structure(dir_path, prefix + extension, max_depth, current_depth + 1, ignore_dirs)
+    
+    return structure
+
+
+def extract_python_files(root_dir, output_file):
+    """Extract all Python files and their content."""
+    py_files = []
+    
+    # Collect all Python files
+    for root, dirs, files in os.walk(root_dir):
+        # Skip certain directories
+        dirs[:] = [d for d in dirs if d not in {".git", "__pycache__", ".pytest_cache", ".venv", "venv", "env"}]
+        
+        for file in files:
+            if file.endswith(".py"):
+                file_path = os.path.join(root, file)
+                py_files.append(file_path)
+    
+    # Sort files for consistent output
+    py_files.sort()
+    
+    # Write to output file
+    with open(output_file, "w", encoding="utf-8") as out:
+        # Header
+        out.write("=" * 80 + "\n")
+        out.write("PROJECT EXTRACTION REPORT\n")
+        out.write("=" * 80 + "\n\n")
+        
+        # Project Structure
+        out.write("PROJECT STRUCTURE:\n")
+        out.write("-" * 80 + "\n\n")
+        out.write(f"{os.path.basename(root_dir)}/\n")
+        out.write(get_project_structure(root_dir))
+        out.write("\n\n")
+        
+        # File Contents
+        out.write("=" * 80 + "\n")
+        out.write("FILE CONTENTS\n")
+        out.write("=" * 80 + "\n\n")
+        
+        for file_path in py_files:
+            # Calculate relative path
+            rel_path = os.path.relpath(file_path, root_dir)
+            
+            # Write file header
+            out.write(f"\n{'=' * 80}\n")
+            out.write(f"FILE: {rel_path}\n")
+            out.write(f"{'=' * 80}\n\n")
+            
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                    out.write(content)
+            except Exception as e:
+                out.write(f"[ERROR] Could not read file: {str(e)}\n")
+            
+            out.write("\n")
+        
+        # Summary
+        out.write("\n" + "=" * 80 + "\n")
+        out.write(f"SUMMARY: {len(py_files)} Python files extracted\n")
+        out.write("=" * 80 + "\n")
+    
+    print(f"✓ Extraction complete!")
+    print(f"✓ Total Python files: {len(py_files)}")
+    print(f"✓ Output saved to: {output_file}")
+    print(f"✓ File size: {os.path.getsize(output_file) / 1024:.2f} KB")
+
+
+if __name__ == "__main__":
+    # Get project root (current directory)
+    project_root = os.getcwd()
+    
+    # Output file
+    output_filename = "project_extraction.txt"
+    output_path = os.path.join(project_root, output_filename)
+    
+    print(f"Extracting Python files from: {project_root}")
+    print(f"Output file: {output_path}\n")
+    
+    extract_python_files(project_root, output_path)
+
+
+================================================================================
+FILE: main.py
+================================================================================
+
+import cv2
+from detection.detector import Detector
+from config import CAMERA_SOURCE, SHOW_FPS, SAVE_CONFIDENCE, MOVEMENT_THRESHOLD, WINDOW_NAME, WINDOW_MODE, WINDOW_WIDTH, WINDOW_HEIGHT, DISPLAY_SCALE, BOX_THICKNESS, FONT_SCALE, FONT_THICKNESS, FRAME_WIDTH, FRAME_HEIGHT
+from utils.fps_tracker import FPSTracker
+from utils.drawing import setup_window
+from behavior.loitering import LoiteringDetector
+import os
+import time
+from datetime import datetime
+from behavior.abandoned_object import AbandonedObjectDetector
+import config
+os.environ["QT_QPA_PLATFORM"] = "xcb"
+
+def main():
+    cap = cv2.VideoCapture(CAMERA_SOURCE)
+    detector = Detector()
+    loiter_detector = LoiteringDetector()
+    
+    # Setup window based on configuration
+    setup_window()
+
+    # Create automation folder
+    save_dir = "saves"
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+    
+    prev_time = time.time()
+    fps = 0
+    fps_tracker = FPSTracker(save_dir=save_dir)
+    
+    # Track object positions and save times
+    object_positions = {}
+    last_save_time = {}
+
+    abandon_detector = AbandonedObjectDetector()
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        frame = cv2.resize(frame, (FRAME_WIDTH, FRAME_HEIGHT))
+        results = detector.detect(frame)
+        
+        boxes = results.boxes
+        frame_copy = frame.copy()  # Copy for saving with bounding boxes
+        
+        tracked_objects = []
+        if boxes.id is not None:
+            ids = boxes.id.cpu().numpy().astype(int)
+            xyxy = boxes.xyxy.cpu().numpy()
+            classes = boxes.cls.cpu().numpy().astype(int)
+            confidences = boxes.conf.cpu().numpy()
+
+            for i in range(len(ids)):
+                x1, y1, x2, y2 = xyxy[i]
+                obj_id = ids[i]
+                cls = classes[i]
+
+                tracked_objects.append({
+                    "id": obj_id,
+                    "class": cls,
+                    "bbox": (x1, y1, x2, y2)
+                })
+
+        suspicious_ids = loiter_detector.update(tracked_objects)
+        suspicious_bags = abandon_detector.update(tracked_objects)
+
+        if boxes.id is not None:
+            check_time = time.time()
+            save_frame = False
+            detected_objects = []
+
+            for i in range(len(ids)):
+                x1, y1, x2, y2 = xyxy[i]
+                obj_id = ids[i]
+                cls = classes[i]
+                class_name = results.names[cls]
+
+                if confidences[i] > SAVE_CONFIDENCE:
+                    # Calculate center position
+                    center_x = (x1 + x2) / 2
+                    center_y = (y1 + y2) / 2
+                    current_pos = (center_x, center_y)
+
+                    # Check for movement
+                    is_moving = False
+                    if obj_id in object_positions:
+                        prev_pos = object_positions[obj_id]
+                        distance = ((current_pos[0] - prev_pos[0])**2 +
+                                   (current_pos[1] - prev_pos[1])**2)**0.5
+                        if distance > MOVEMENT_THRESHOLD:
+                            is_moving = True
+
+                    # Update position
+                    object_positions[obj_id] = current_pos
+
+                    # Determine if we should save
+                    if obj_id not in last_save_time:
+                        last_save_time[obj_id] = 0
+
+                    time_since_last_save = check_time - last_save_time[obj_id]
+
+                    # Save logic: moving objects save immediately, stationary save once per second
+                    if is_moving or time_since_last_save >= 1.0:
+                        save_frame = True
+                        last_save_time[obj_id] = check_time
+                        if class_name not in detected_objects:
+                            detected_objects.append(class_name)
+
+                # Draw bounding box with object name
+                color = (0, 255, 0)
+                if obj_id in suspicious_ids:
+                    color = (0, 0, 255)
+                if obj_id in suspicious_bags:
+                    color = (0, 0, 255)
+                cv2.rectangle(frame_copy, (int(x1), int(y1)), (int(x2), int(y2)), color, BOX_THICKNESS)
+                label = f"{class_name} ID:{obj_id}"
+                cv2.putText(frame_copy, label, (int(x1), int(y1)-10),
+                            cv2.FONT_HERSHEY_SIMPLEX, FONT_SCALE, color, FONT_THICKNESS)
+
+            # Save frame with bounding boxes if needed
+            if save_frame and detected_objects:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                objects_str = "_".join(detected_objects)
+                filename = os.path.join(save_dir, f"detected_{objects_str}_{timestamp}.jpg")
+                cv2.imwrite(filename, frame_copy)
+                print(f"Saved: {filename}")
+        
+        # Calculate and display FPS
+        if SHOW_FPS:
+            current_time = time.time()
+            fps = 1 / (current_time - prev_time)
+            prev_time = current_time
+            fps_tracker.update(fps)
+            avg_fps = fps_tracker.get_average_fps()
+            cv2.putText(frame_copy, f"FPS: {fps:.1f} (Avg: {avg_fps:.1f})", (20, 40),
+                       cv2.FONT_HERSHEY_SIMPLEX, FONT_SCALE, (0, 255, 0), FONT_THICKNESS)
+
+        display_frame = frame_copy
+        if DISPLAY_SCALE != 1.0:
+            display_frame = cv2.resize(
+                frame_copy,
+                None,
+                fx=DISPLAY_SCALE,
+                fy=DISPLAY_SCALE
+            )
+
+        cv2.imshow(WINDOW_NAME, display_frame)
+
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+    # Save FPS data and plot at the end of session
+    fps_tracker.finalize()
+    
+    cap.release()
+    cv2.destroyAllWindows()
+
+
+if __name__ == "__main__":
+    main()
+
+================================================================================
+FILE: utils/__init__.py
+================================================================================
+
+
+
+================================================================================
+FILE: utils/drawing.py
+================================================================================
+
+import cv2
+import config
+
+
+def setup_window():
+    """Setup window based on WINDOW_MODE configuration."""
+    mode = config.WINDOW_MODE
+    name = config.WINDOW_NAME
+
+    if mode == "normal":
+        cv2.namedWindow(name, cv2.WINDOW_AUTOSIZE)
+
+    elif mode == "resizable":
+        cv2.namedWindow(name, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(name, config.WINDOW_WIDTH, config.WINDOW_HEIGHT)
+
+    elif mode == "maximized":
+        cv2.namedWindow(name, cv2.WINDOW_NORMAL)
+        cv2.setWindowProperty(name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+        cv2.setWindowProperty(name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_NORMAL)
+
+    elif mode == "fullscreen":
+        cv2.namedWindow(name, cv2.WINDOW_NORMAL)
+        cv2.setWindowProperty(name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+
+    else:
+        raise ValueError(f"Invalid WINDOW_MODE: {mode}")
+
+
+================================================================================
+FILE: utils/fps.py
+================================================================================
+
+
+
+================================================================================
+FILE: utils/fps_tracker.py
+================================================================================
+
+import matplotlib.pyplot as plt
+import time
+from collections import deque
+import os
+import csv
+
+
+class FPSTracker:
+    def __init__(self, max_samples=300, save_dir="saves"):
+        self.fps_history = deque(maxlen=max_samples)
+        self.time_history = deque(maxlen=max_samples)
+        self.start_time = time.time()
+        self.save_dir = save_dir
+        self.csv_file = os.path.join(save_dir, 'fps_data.csv')
+        self.plot_file = os.path.join(save_dir, 'fps_plot.png')
+        
+        if not os.path.exists(save_dir):
+            os.makedirs(save_dir)
+    
+    def update(self, fps):
+        """Add a new FPS measurement"""
+        current_time = time.time() - self.start_time
+        self.fps_history.append(fps)
+        self.time_history.append(current_time)
+    
+    def save_csv(self):
+        """Save FPS data to CSV file"""
+        if len(self.fps_history) == 0:
+            return
+        
+        with open(self.csv_file, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['Time (seconds)', 'FPS'])
+            for time_val, fps_val in zip(self.time_history, self.fps_history):
+                writer.writerow([f'{time_val:.2f}', f'{fps_val:.1f}'])
+        
+        print(f"FPS data saved: {self.csv_file}")
+    
+    def save_plot(self):
+        """Generate and save FPS plot"""
+        if len(self.fps_history) < 2:
+            return
+        
+        plt.figure(figsize=(10, 6))
+        plt.plot(list(self.time_history), list(self.fps_history), 'b-', linewidth=1)
+        plt.xlabel('Time (seconds)', fontsize=12)
+        plt.ylabel('FPS', fontsize=12)
+        plt.title('FPS Performance Over Time', fontsize=14, fontweight='bold')
+        plt.grid(True, alpha=0.3)
+        
+        # Add statistics
+        avg_fps = sum(self.fps_history) / len(self.fps_history)
+        min_fps = min(self.fps_history)
+        max_fps = max(self.fps_history)
+        
+        stats_text = f'Avg: {avg_fps:.1f} | Min: {min_fps:.1f} | Max: {max_fps:.1f}'
+        plt.text(0.02, 0.98, stats_text, transform=plt.gca().transAxes,
+                fontsize=10, verticalalignment='top',
+                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+        
+        plt.tight_layout()
+        
+        plt.savefig(self.plot_file, dpi=100)
+        plt.close()
+        print(f"FPS plot saved: {self.plot_file}")
+    
+    def finalize(self):
+        """Save CSV and plot at the end of session"""
+        self.save_csv()
+        self.save_plot()
+    
+    def get_average_fps(self):
+        """Get current average FPS"""
+        if len(self.fps_history) == 0:
+            return 0
+        return sum(self.fps_history) / len(self.fps_history)
+
+
+================================================================================
+FILE: utils/geometry.py
+================================================================================
+
+import math
+
+
+def get_center(bbox):
+    x1, y1, x2, y2 = bbox
+    return int((x1 + x2) / 2), int((y1 + y2) / 2)
+
+
+def distance(p1, p2):
+    return math.hypot(p1[0] - p2[0], p1[1] - p2[1])
+
+================================================================================
+SUMMARY: 17 Python files extracted
+================================================================================

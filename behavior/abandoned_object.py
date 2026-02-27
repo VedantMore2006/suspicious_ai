@@ -43,6 +43,7 @@ class AbandonedObjectDetector:
 
             if nearest_person_dist < config.ABANDON_DISTANCE:
                 state["last_near_time"] = current_time
+                state["abandoned"] = False
             else:
                 time_away = current_time - state["last_near_time"]
                 if time_away > config.ABANDON_TIME:

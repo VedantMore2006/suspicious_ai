@@ -14,6 +14,8 @@ suspicious_ai/
 ├── suspicious_behavior_detection.md
 ├── todo
 ├── yolov8n.pt
+├── assets/
+│   └── alert.mp3
 ├── behavior/
 │   ├── __init__.py
 │   ├── abandoned_object.py
@@ -28,7 +30,9 @@ suspicious_ai/
 │   └── detector.py
 └── utils/
     ├── __init__.py
+    ├── audio.py
     ├── drawing.py
+    ├── event_logger.py
     ├── fps.py
     ├── fps_tracker.py
     └── geometry.py
@@ -186,7 +190,7 @@ FILE: config.py
 # config.py
 
 # Camera configuration
-CAMERA_SOURCE = 0
+CAMERA_SOURCE = 2
 SHOW_FPS = True
 
 FRAME_WIDTH = 640
@@ -199,14 +203,14 @@ FRAME_HEIGHT = 480
 WINDOW_NAME = "Suspicious Behavior Detector"
 
 # Modes: "normal", "resizable", "maximized", "fullscreen"
-WINDOW_MODE = "fullscreen"
+WINDOW_MODE = "normal"
 
 # Used only if mode == "resizable"
 WINDOW_WIDTH = 1200
 WINDOW_HEIGHT = 800
 
 # Scale factor applied ONLY to display (not detection)
-DISPLAY_SCALE = 1.0  # 1.0 = original, 1.5 = 150%, etc.
+DISPLAY_SCALE = 1.6  # 1.0 = original, 1.5 = 150%, etc.
 
 # Drawing appearance
 BOX_THICKNESS = 2
@@ -231,8 +235,8 @@ CELL_PHONE = 67
 DETECTION_CLASSES = [PERSON, BACKPACK, HANDBAG, SUITCASE, CELL_PHONE]
 
 # Behavior thresholds
-LOITER_TIME = 8
-LOITER_MOVEMENT_THRESHOLD = 15
+LOITER_TIME = 3
+LOITER_MOVEMENT_THRESHOLD = 100
 
 ABANDON_TIME = 5
 ABANDON_DISTANCE = 120
@@ -240,6 +244,21 @@ ABANDON_DISTANCE = 120
 PHONE_TIME = 5
 
 SUSPICION_THRESHOLD = 3
+
+ENABLE_BEEP = True
+ENABLE_CONSOLE_LOG = True
+ALERT_COOLDOWN = 5  # seconds between repeated alerts
+
+SHOW_ALERT_BANNER = True
+ALERT_BANNER_DURATION = 3  # seconds
+
+# ===============================
+# AUDIO CONFIGURATION
+# ===============================
+
+ENABLE_BEEP = True
+ALERT_SOUND_PATH = "/home/vedant/suspicious_ai/assets/alert.mp3"
+AUDIO_VOLUME = 0.8
 
 ================================================================================
 FILE: data/__init__.py
@@ -273,6 +292,7 @@ class Detector:
         self.model.fuse()
 
     def detect(self, frame):
+        # Track objects with configured thresholds and no console spam
         results = self.model.track(
             frame,
             imgsz=config.IMG_SIZE,
@@ -280,7 +300,8 @@ class Detector:
             iou=config.IOU_THRESHOLD,
             classes=config.DETECTION_CLASSES,
             persist=True,
-            tracker="bytetrack.yaml"
+            tracker="bytetrack.yaml",
+            verbose=False,
         )
         return results[0]
 
@@ -433,6 +454,8 @@ from detection.detector import Detector
 from config import CAMERA_SOURCE, SHOW_FPS, SAVE_CONFIDENCE, MOVEMENT_THRESHOLD, WINDOW_NAME, WINDOW_MODE, WINDOW_WIDTH, WINDOW_HEIGHT, DISPLAY_SCALE, BOX_THICKNESS, FONT_SCALE, FONT_THICKNESS, FRAME_WIDTH, FRAME_HEIGHT
 from utils.fps_tracker import FPSTracker
 from utils.drawing import setup_window
+from utils.event_logger import EventLogger
+from utils.audio import AudioManager
 from behavior.loitering import LoiteringDetector
 import os
 import time
@@ -445,6 +468,13 @@ def main():
     cap = cv2.VideoCapture(CAMERA_SOURCE)
     detector = Detector()
     loiter_detector = LoiteringDetector()
+    event_logger = EventLogger()
+    audio_manager = AudioManager()
+    alarm_active = False
+    last_abandon_detect_time = 0
+    ALARM_STABILITY_BUFFER = 0.5  # seconds
+    active_alert = None
+    alert_start_time = 0
     
     # Setup window based on configuration
     setup_window()
@@ -469,7 +499,7 @@ def main():
         if not ret:
             break
 
-        frame = cv2.resize(frame, (FRAME_WIDTH, FRAME_HEIGHT))
+        frame = cv2.resize(frame, (640, 480))
         results = detector.detect(frame)
         
         boxes = results.boxes
@@ -495,6 +525,27 @@ def main():
 
         suspicious_ids = loiter_detector.update(tracked_objects)
         suspicious_bags = abandon_detector.update(tracked_objects)
+
+        current_time = time.time()
+
+        if suspicious_bags:
+            last_abandon_detect_time = current_time
+
+            if not alarm_active:
+                if config.ENABLE_CONSOLE_LOG:
+                    event_logger.log("abandon", "Abandoned object detected!", config.ALERT_COOLDOWN)
+                audio_manager.start_alarm()
+                alarm_active = True
+
+            active_alert = "ABANDONED OBJECT DETECTED"
+            alert_start_time = current_time
+
+        else:
+            if alarm_active:
+                if current_time - last_abandon_detect_time > ALARM_STABILITY_BUFFER:
+                    audio_manager.stop_alarm()
+                    alarm_active = False
+                    active_alert = None
 
         if boxes.id is not None:
             check_time = time.time()
@@ -567,6 +618,25 @@ def main():
             cv2.putText(frame_copy, f"FPS: {fps:.1f} (Avg: {avg_fps:.1f})", (20, 40),
                        cv2.FONT_HERSHEY_SIMPLEX, FONT_SCALE, (0, 255, 0), FONT_THICKNESS)
 
+        # Draw alert banner when active
+        if config.SHOW_ALERT_BANNER and active_alert:
+            if time.time() - alert_start_time < config.ALERT_BANNER_DURATION:
+                overlay = frame_copy.copy()
+                cv2.rectangle(overlay, (0, 0), (frame_copy.shape[1], 80), (0, 0, 255), -1)
+                cv2.addWeighted(overlay, 0.6, frame_copy, 0.4, 0, frame_copy)
+
+                cv2.putText(
+                    frame_copy,
+                    active_alert,
+                    (50, 50),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1.2,
+                    (255, 255, 255),
+                    3
+                )
+            else:
+                active_alert = None
+
         display_frame = frame_copy
         if DISPLAY_SCALE != 1.0:
             display_frame = cv2.resize(
@@ -596,6 +666,46 @@ FILE: utils/__init__.py
 ================================================================================
 
 
+
+================================================================================
+FILE: utils/audio.py
+================================================================================
+
+import pygame
+import config
+
+
+class AudioManager:
+    def __init__(self):
+        self.enabled = config.ENABLE_BEEP
+        self.initialized = False
+        self.alarm_playing = False
+
+        if self.enabled:
+            try:
+                pygame.mixer.init()
+                self.sound = pygame.mixer.Sound(config.ALERT_SOUND_PATH)
+                self.sound.set_volume(config.AUDIO_VOLUME)
+                self.initialized = True
+            except Exception as e:
+                print(f"[Audio Error] {e}")
+                self.enabled = False
+
+    def start_alarm(self):
+        if not self.enabled or not self.initialized:
+            return
+
+        if not self.alarm_playing:
+            self.sound.play(loops=-1)  # infinite loop
+            self.alarm_playing = True
+
+    def stop_alarm(self):
+        if not self.enabled or not self.initialized:
+            return
+
+        if self.alarm_playing:
+            self.sound.stop()
+            self.alarm_playing = False
 
 ================================================================================
 FILE: utils/drawing.py
@@ -628,6 +738,28 @@ def setup_window():
 
     else:
         raise ValueError(f"Invalid WINDOW_MODE: {mode}")
+
+
+================================================================================
+FILE: utils/event_logger.py
+================================================================================
+
+import time
+
+
+class EventLogger:
+    def __init__(self):
+        self.last_events = {}
+
+    def log(self, event_type, message, cooldown=5):
+        current_time = time.time()
+
+        if event_type not in self.last_events:
+            self.last_events[event_type] = 0
+
+        if current_time - self.last_events[event_type] > cooldown:
+            print(f"[ALERT] {message}")
+            self.last_events[event_type] = current_time
 
 
 ================================================================================
@@ -734,5 +866,5 @@ def distance(p1, p2):
     return math.hypot(p1[0] - p2[0], p1[1] - p2[1])
 
 ================================================================================
-SUMMARY: 17 Python files extracted
+SUMMARY: 19 Python files extracted
 ================================================================================

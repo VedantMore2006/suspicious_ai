@@ -20,10 +20,13 @@ class AbandonedObjectDetector:
             elif obj["class"] in [config.BACKPACK, config.HANDBAG, config.SUITCASE]:
                 bags.append(obj)
 
+        active_bag_ids = []
+
         for bag in bags:
             bag_id = bag["id"]
-            bag_center = get_center(bag["bbox"])
+            active_bag_ids.append(bag_id)
 
+            bag_center = get_center(bag["bbox"])
             nearest_person_dist = float("inf")
 
             for person in persons:
@@ -34,26 +37,36 @@ class AbandonedObjectDetector:
 
             if bag_id not in self.bag_state:
                 self.bag_state[bag_id] = {
-                    "first_seen": current_time,
+                    "last_seen": current_time,
                     "last_near_time": current_time,
                     "abandoned": False
                 }
 
             state = self.bag_state[bag_id]
+            state["last_seen"] = current_time
 
+            # If someone is near bag
             if nearest_person_dist < config.ABANDON_DISTANCE:
                 state["last_near_time"] = current_time
                 state["abandoned"] = False
+
             else:
                 time_away = current_time - state["last_near_time"]
+
                 if time_away > config.ABANDON_TIME:
                     state["abandoned"] = True
-                    suspicious_bags.append(bag_id)
 
-        # Cleanup removed bags
-        active_bag_ids = [bag["id"] for bag in bags]
+            if state["abandoned"]:
+                suspicious_bags.append(bag_id)
+
+        # Grace period for flicker (IMPORTANT)
+        GRACE_PERIOD = 0.7  # seconds
+
         for saved_id in list(self.bag_state.keys()):
-            if saved_id not in active_bag_ids:
+            state = self.bag_state[saved_id]
+
+            # If bag not seen recently
+            if current_time - state["last_seen"] > GRACE_PERIOD:
                 del self.bag_state[saved_id]
 
         return suspicious_bags

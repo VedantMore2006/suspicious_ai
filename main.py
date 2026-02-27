@@ -6,6 +6,7 @@ from utils.drawing import setup_window
 from utils.event_logger import EventLogger
 from utils.audio import AudioManager
 from behavior.loitering import LoiteringDetector
+from behavior.conflict_detection import ConflictDetector
 import os
 import time
 from datetime import datetime
@@ -19,6 +20,9 @@ def main():
     loiter_detector = LoiteringDetector()
     event_logger = EventLogger()
     audio_manager = AudioManager()
+    alarm_active = False
+    last_abandon_detect_time = 0
+    ALARM_STABILITY_BUFFER = 0.5  # seconds
     active_alert = None
     alert_start_time = 0
     
@@ -39,13 +43,14 @@ def main():
     last_save_time = {}
 
     abandon_detector = AbandonedObjectDetector()
+    conflict_detector = ConflictDetector()
 
     while True:
         ret, frame = cap.read()
         if not ret:
             break
 
-        frame = cv2.resize(frame, (FRAME_WIDTH, FRAME_HEIGHT))
+        frame = cv2.resize(frame, (640, 480))
         results = detector.detect(frame)
         
         boxes = results.boxes
@@ -71,17 +76,38 @@ def main():
 
         suspicious_ids = loiter_detector.update(tracked_objects)
         suspicious_bags = abandon_detector.update(tracked_objects)
+        conflict_alert = conflict_detector.update(tracked_objects)
 
         current_time = time.time()
 
         if suspicious_bags:
+            last_abandon_detect_time = current_time
+
+            if not alarm_active:
+                if config.ENABLE_CONSOLE_LOG:
+                    event_logger.log("abandon", "Abandoned object detected!", config.ALERT_COOLDOWN)
+                audio_manager.start_alarm()
+                alarm_active = True
+
             active_alert = "ABANDONED OBJECT DETECTED"
             alert_start_time = current_time
 
-            if config.ENABLE_CONSOLE_LOG:
-                event_logger.log("abandon", "Abandoned object detected!", config.ALERT_COOLDOWN)
+        else:
+            if alarm_active:
+                if (not conflict_alert) and current_time - last_abandon_detect_time > ALARM_STABILITY_BUFFER:
+                    audio_manager.stop_alarm()
+                    alarm_active = False
+                    active_alert = None
 
-            audio_manager.play_alert()
+        if conflict_alert:
+            active_alert = "POSSIBLE PHYSICAL CONFLICT"
+            alert_start_time = current_time
+
+            if not alarm_active:
+                audio_manager.start_alarm()
+                alarm_active = True
+
+            event_logger.log("conflict", "Possible physical conflict detected!", config.ALERT_COOLDOWN)
 
         if boxes.id is not None:
             check_time = time.time()

@@ -120,7 +120,7 @@ def main():
                 cls = classes[i]
                 class_name = results.names[cls]
 
-                if confidences[i] > SAVE_CONFIDENCE:
+                if config.SAVE_FRAMES and confidences[i] > SAVE_CONFIDENCE:
                     # Calculate center position
                     center_x = (x1 + x2) / 2
                     center_y = (y1 + y2) / 2
@@ -163,7 +163,7 @@ def main():
                             cv2.FONT_HERSHEY_SIMPLEX, FONT_SCALE, color, FONT_THICKNESS)
 
             # Save frame with bounding boxes if needed
-            if save_frame and detected_objects:
+            if config.SAVE_FRAMES and save_frame and detected_objects:
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
                 objects_str = "_".join(detected_objects)
                 filename = os.path.join(save_dir, f"detected_{objects_str}_{timestamp}.jpg")

@@ -1,31 +1,20 @@
-import time
 import config
-from utils.geometry import get_center
-
-
-def compute_iou(boxA, boxB):
-    xA = max(boxA[0], boxB[0])
-    yA = max(boxA[1], boxB[1])
-    xB = min(boxA[2], boxB[2])
-    yB = min(boxA[3], boxB[3])
-
-    interArea = max(0, xB - xA) * max(0, yB - yA)
-
-    boxAArea = (boxA[2] - boxA[0]) * (boxA[3] - boxA[1])
-    boxBArea = (boxB[2] - boxB[0]) * (boxB[3] - boxB[1])
-
-    union = boxAArea + boxBArea - interArea
-
-    if union == 0:
-        return 0
-
-    return interArea / union
+import time
+import math
 
 
 class ConflictDetector:
     def __init__(self):
-        self.prev_positions = {}
+        self.history = {}
         self.confirm_counter = 0
+
+    def compute_center(self, bbox):
+        x1, y1, x2, y2 = bbox
+        return ((x1 + x2) / 2, (y1 + y2) / 2)
+
+    def compute_area(self, bbox):
+        x1, y1, x2, y2 = bbox
+        return (x2 - x1) * (y2 - y1)
 
     def update(self, tracked_objects):
         if not config.ENABLE_CONFLICT_DETECTION:
@@ -37,47 +26,70 @@ class ConflictDetector:
             self.confirm_counter = 0
             return False
 
-        conflict_detected = False
+        current_time = time.time()
+        conflict = False
 
         for i in range(len(persons)):
             for j in range(i + 1, len(persons)):
-                boxA = persons[i]["bbox"]
-                boxB = persons[j]["bbox"]
 
-                iou = compute_iou(boxA, boxB)
+                idA = persons[i]["id"]
+                idB = persons[j]["id"]
 
-                if iou > config.PERSON_IOU_THRESHOLD:
+                centerA = self.compute_center(persons[i]["bbox"])
+                centerB = self.compute_center(persons[j]["bbox"])
 
-                    idA = persons[i]["id"]
-                    idB = persons[j]["id"]
+                areaA = self.compute_area(persons[i]["bbox"])
+                areaB = self.compute_area(persons[j]["bbox"])
 
-                    centerA = get_center(boxA)
-                    centerB = get_center(boxB)
+                distance = math.hypot(centerA[0] - centerB[0], centerA[1] - centerB[1])
 
-                    motionA = 0
-                    motionB = 0
+                if distance > config.PROXIMITY_DISTANCE:
+                    continue
 
-                    if idA in self.prev_positions:
-                        prevA = self.prev_positions[idA]
-                        motionA = ((centerA[0]-prevA[0])**2 + (centerA[1]-prevA[1])**2)**0.5
+                pair_key = tuple(sorted((idA, idB)))
 
-                    if idB in self.prev_positions:
-                        prevB = self.prev_positions[idB]
-                        motionB = ((centerB[0]-prevB[0])**2 + (centerB[1]-prevB[1])**2)**0.5
+                if pair_key not in self.history:
+                    self.history[pair_key] = {
+                        "prev_distance": distance,
+                        "prev_velocity": 0,
+                        "prev_areaA": areaA,
+                        "prev_areaB": areaB,
+                        "prev_time": current_time
+                    }
+                    continue
 
-                    if motionA > config.PERSON_MOTION_THRESHOLD or motionB > config.PERSON_MOTION_THRESHOLD:
-                        conflict_detected = True
+                prev = self.history[pair_key]
 
-        # Update positions
-        for person in persons:
-            self.prev_positions[person["id"]] = get_center(person["bbox"])
+                dt = current_time - prev["prev_time"]
+                if dt == 0:
+                    continue
 
-        if conflict_detected:
+                velocity = (distance - prev["prev_distance"]) / dt
+                acceleration = (velocity - prev["prev_velocity"]) / dt
+
+                area_changeA = abs(areaA - prev["prev_areaA"]) / (prev["prev_areaA"] + 1e-5)
+                area_changeB = abs(areaB - prev["prev_areaB"]) / (prev["prev_areaB"] + 1e-5)
+
+                if (
+                    abs(velocity) > config.DISTANCE_VELOCITY_THRESHOLD
+                    and abs(acceleration) > config.ACCELERATION_THRESHOLD
+                ) or (
+                    area_changeA > config.AREA_CHANGE_THRESHOLD
+                    or area_changeB > config.AREA_CHANGE_THRESHOLD
+                ):
+                    conflict = True
+
+                self.history[pair_key] = {
+                    "prev_distance": distance,
+                    "prev_velocity": velocity,
+                    "prev_areaA": areaA,
+                    "prev_areaB": areaB,
+                    "prev_time": current_time
+                }
+
+        if conflict:
             self.confirm_counter += 1
         else:
             self.confirm_counter = 0
 
-        if self.confirm_counter >= config.CONFLICT_CONFIRM_FRAMES:
-            return True
-
-        return False
+        return self.confirm_counter >= config.CONFLICT_CONFIRM_FRAMES

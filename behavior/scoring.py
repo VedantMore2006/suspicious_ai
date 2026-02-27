@@ -3,13 +3,18 @@ import config
 
 class ThreatScorer:
     def __init__(self):
-        self.scores = {}
+        self.instant_scores = {}
+        self.session_scores = {}
 
-    def update(self, tracked_objects, loiter_ids, abandoned_bags, conflict_flag, phone_results):
+    def update(self, tracked_objects, loiter_ids, abandoned_bags, conflict_flag):
         persons = [o for o in tracked_objects if o["class"] == config.PERSON]
+
+        current_ids = set()
 
         for person in persons:
             pid = person["id"]
+            current_ids.add(pid)
+
             score = 0
 
             if pid in loiter_ids:
@@ -18,16 +23,24 @@ class ThreatScorer:
             if conflict_flag:
                 score += 4
 
-            if pid in phone_results and phone_results[pid]["misuse"]:
-                score += 2
-
-            # optional: proximity to abandoned bag
             if abandoned_bags:
                 score += 2
 
-            self.scores[pid] = score
+            self.instant_scores[pid] = score
 
-        return self.scores
+            if pid not in self.session_scores:
+                self.session_scores[pid] = 0
+
+            # Only add if non-zero event
+            if score > 0:
+                self.session_scores[pid] += score
+
+        # Remove IDs no longer present
+        for saved_id in list(self.instant_scores.keys()):
+            if saved_id not in current_ids:
+                del self.instant_scores[saved_id]
+
+        return self.instant_scores, self.session_scores
 
     def get_level(self, score):
         if score >= 5:

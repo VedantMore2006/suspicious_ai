@@ -8,7 +8,6 @@ from utils.event_logger import EventLogger
 from utils.audio import AudioManager
 from behavior.loitering import LoiteringDetector
 from behavior.conflict_detection import ConflictDetector
-from behavior.phone_behavior import PhoneBehaviorDetector
 from behavior.scoring import ThreatScorer
 import os
 import time
@@ -47,8 +46,9 @@ def main():
 
     abandon_detector = AbandonedObjectDetector()
     conflict_detector = ConflictDetector()
-    phone_detector = PhoneBehaviorDetector()
     scorer = ThreatScorer()
+    
+    current_alert_state = "NONE"
 
     while True:
         ret, frame = cap.read()
@@ -82,57 +82,45 @@ def main():
         suspicious_ids = loiter_detector.update(tracked_objects)
         suspicious_bags = abandon_detector.update(tracked_objects)
         conflict_alert = conflict_detector.update(tracked_objects)
-        phone_results = phone_detector.update(tracked_objects)
-        scores = scorer.update(
+        instant_scores, session_scores = scorer.update(
             tracked_objects,
             suspicious_ids,
             suspicious_bags,
             conflict_alert,
-            phone_results,
         )
 
         current_time = time.time()
 
-        # Determine alert type based on priority
-        alert_type = None
+        # Determine new alert state based on priority
+        new_alert_state = "NONE"
 
         if conflict_alert:
-            alert_type = "CONFLICT"
+            new_alert_state = "CONFLICT"
         elif suspicious_bags:
-            alert_type = "ABANDONED"
-        elif any(phone_results.get(pid, {}).get("misuse", False) for pid in phone_results):
-            alert_type = "PHONE"
+            new_alert_state = "ABANDONED"
 
-        # Handle alert logic
-        if alert_type == "CONFLICT":
-            active_alert = "POSSIBLE PHYSICAL CONFLICT"
-            alert_start_time = current_time
-            audio_manager.start_alarm()
-            alarm_active = True
-            event_logger.log("conflict", "Possible physical conflict detected!", config.ALERT_COOLDOWN)
-
-        elif alert_type == "ABANDONED":
-            active_alert = "ABANDONED OBJECT DETECTED"
-            alert_start_time = current_time
-            last_abandon_detect_time = current_time
-            
-            if not alarm_active:
-                if config.ENABLE_CONSOLE_LOG:
-                    event_logger.log("abandon", "Abandoned object detected!", config.ALERT_COOLDOWN)
-                audio_manager.start_alarm()
-                alarm_active = True
-
-        elif alert_type == "PHONE":
-            active_alert = "SUSPICIOUS PHONE RECORDING"
-            alert_start_time = current_time
-            # Optional: no alarm for phone behavior
-
-        else:
-            # No alert active - stop alarm if enough time has passed
-            if alarm_active and current_time - last_abandon_detect_time > ALARM_STABILITY_BUFFER:
+        # Only react if state changes
+        if new_alert_state != current_alert_state:
+            # Stop previous alarm if needed
+            if current_alert_state != "NONE":
                 audio_manager.stop_alarm()
-                alarm_active = False
-            active_alert = None
+
+            if new_alert_state == "CONFLICT":
+                active_alert = "POSSIBLE PHYSICAL CONFLICT"
+                alert_start_time = current_time
+                audio_manager.start_alarm()
+                event_logger.log("conflict", "Possible physical conflict detected!", config.ALERT_COOLDOWN)
+
+            elif new_alert_state == "ABANDONED":
+                active_alert = "ABANDONED OBJECT DETECTED"
+                alert_start_time = current_time
+                audio_manager.start_alarm()
+                event_logger.log("abandon", "Abandoned object detected!", config.ALERT_COOLDOWN)
+
+            else:
+                active_alert = None
+
+            current_alert_state = new_alert_state
 
         if boxes.id is not None:
             check_time = time.time()
@@ -184,18 +172,10 @@ def main():
                     color = (0, 0, 255)
                 label = f"{class_name} ID:{obj_id}"
 
-                if obj_id in phone_results:
-                    phone_state = phone_results[obj_id]["state"]
-                    misuse = phone_results[obj_id]["misuse"]
-
-                    label += f" | Phone: {phone_state}"
-
-                    if misuse:
-                        color = (0, 165, 255)
-
-                if cls == config.PERSON and obj_id in scores:
-                    level = scorer.get_level(scores[obj_id])
-                    label += f" | Threat: {level}"
+                if cls == config.PERSON and obj_id in instant_scores:
+                    level = scorer.get_level(instant_scores[obj_id])
+                    session_total = session_scores.get(obj_id, 0)
+                    label += f" | Threat: {level} | Session: {session_total}"
 
                 cv2.rectangle(frame_copy, (int(x1), int(y1)), (int(x2), int(y2)), color, BOX_THICKNESS)
                 cv2.putText(frame_copy, label, (int(x1), int(y1)-10),
@@ -251,52 +231,134 @@ def main():
 
         # Draw panel content on the right side
         panel_x = w  # Start of panel area
+        margin_left = 15
         
-        y_offset = 40
+        # Panel title
+        y_offset = 35
         cv2.putText(
             extended_frame,
-            "RISK PANEL",
-            (panel_x + 20, 30),
+            "THREAT ANALYSIS",
+            (panel_x + margin_left, y_offset),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.7,
+            0.8,
             (0, 255, 255),
             2,
         )
-
-        for pid, score in scores.items():
+        
+        # Separator line
+        y_offset += 10
+        cv2.line(
+            extended_frame,
+            (panel_x + margin_left, y_offset),
+            (panel_x + panel_width - margin_left, y_offset),
+            (100, 100, 100),
+            1
+        )
+        
+        # Active Threats section
+        y_offset += 30
+        cv2.putText(
+            extended_frame,
+            "ACTIVE THREATS:",
+            (panel_x + margin_left, y_offset),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (150, 150, 150),
+            1,
+        )
+        
+        y_offset += 25
+        
+        # Display each person's threat score
+        for pid, score in instant_scores.items():
             level = scorer.get_level(score)
-            text = f"ID {pid}: {level} ({score})"
-
+            session_total = session_scores.get(pid, 0)
+            
+            # Determine color based on threat level
             color = (0, 255, 0)
             if level == "SUSPICIOUS":
                 color = (0, 165, 255)
             elif level == "HIGH":
                 color = (0, 0, 255)
-
+            
+            # ID label
             cv2.putText(
                 extended_frame,
-                text,
-                (panel_x + 20, y_offset),
+                f"ID {pid}:",
+                (panel_x + margin_left + 10, y_offset),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
+                0.55,
+                (200, 200, 200),
+                1,
+            )
+            
+            # Threat level
+            cv2.putText(
+                extended_frame,
+                level,
+                (panel_x + margin_left + 70, y_offset),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
                 color,
                 2,
             )
-            y_offset += 30
-
-        recent = event_logger.timeline[-3:]
-        event_y = h - 100
-        for _, msg in recent:
+            
+            # Current score
             cv2.putText(
                 extended_frame,
-                msg,
-                (panel_x + 20, event_y),
+                f"({score})",
+                (panel_x + margin_left + 185, y_offset),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.5,
-                (255, 255, 255),
+                (180, 180, 180),
                 1,
             )
-            event_y += 20
+            
+            y_offset += 22
+            
+            # Session total on next line
+            cv2.putText(
+                extended_frame,
+                f"  Session Total: {session_total}",
+                (panel_x + margin_left + 10, y_offset),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.45,
+                (150, 150, 150),
+                1,
+            )
+            
+            y_offset += 28
+        
+        # Event Timeline section
+        if event_logger.timeline:
+            y_offset = max(y_offset + 20, h - 150)
+            
+            cv2.putText(
+                extended_frame,
+                "EVENT TIMELINE:",
+                (panel_x + margin_left, y_offset),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (150, 150, 150),
+                1,
+            )
+            
+            y_offset += 25
+            
+            recent = event_logger.timeline[-3:]
+            for _, msg in recent:
+                # Truncate message if too long
+                display_msg = msg[:30] + "..." if len(msg) > 30 else msg
+                cv2.putText(
+                    extended_frame,
+                    f"• {display_msg}",
+                    (panel_x + margin_left + 5, y_offset),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.4,
+                    (255, 255, 255),
+                    1,
+                )
+                y_offset += 20
         
         # Use extended frame as the display frame
         frame_copy = extended_frame

@@ -412,7 +412,7 @@ class ThreatScorer:
     def __init__(self):
         self.scores = {}
 
-    def update(self, tracked_objects, loiter_ids, abandoned_bags, conflict_flag, phone_results):
+    def update(self, tracked_objects, loiter_ids, abandoned_bags, conflict_flag):
         persons = [o for o in tracked_objects if o["class"] == config.PERSON]
 
         for person in persons:
@@ -424,9 +424,6 @@ class ThreatScorer:
 
             if conflict_flag:
                 score += 4
-
-            if pid in phone_results and phone_results[pid]["misuse"]:
-                score += 2
 
             # optional: proximity to abandoned bag
             if abandoned_bags:
@@ -739,6 +736,7 @@ FILE: main.py
 ================================================================================
 
 import cv2
+import numpy as np
 from detection.detector import Detector
 from config import CAMERA_SOURCE, SHOW_FPS, SAVE_CONFIDENCE, MOVEMENT_THRESHOLD, WINDOW_NAME, WINDOW_MODE, WINDOW_WIDTH, WINDOW_HEIGHT, DISPLAY_SCALE, BOX_THICKNESS, FONT_SCALE, FONT_THICKNESS, FRAME_WIDTH, FRAME_HEIGHT
 from utils.fps_tracker import FPSTracker
@@ -747,7 +745,6 @@ from utils.event_logger import EventLogger
 from utils.audio import AudioManager
 from behavior.loitering import LoiteringDetector
 from behavior.conflict_detection import ConflictDetector
-from behavior.phone_behavior import PhoneBehaviorDetector
 from behavior.scoring import ThreatScorer
 import os
 import time
@@ -786,7 +783,6 @@ def main():
 
     abandon_detector = AbandonedObjectDetector()
     conflict_detector = ConflictDetector()
-    phone_detector = PhoneBehaviorDetector()
     scorer = ThreatScorer()
 
     while True:
@@ -821,13 +817,11 @@ def main():
         suspicious_ids = loiter_detector.update(tracked_objects)
         suspicious_bags = abandon_detector.update(tracked_objects)
         conflict_alert = conflict_detector.update(tracked_objects)
-        phone_results = phone_detector.update(tracked_objects)
         scores = scorer.update(
             tracked_objects,
             suspicious_ids,
             suspicious_bags,
             conflict_alert,
-            phone_results,
         )
 
         current_time = time.time()
@@ -839,8 +833,6 @@ def main():
             alert_type = "CONFLICT"
         elif suspicious_bags:
             alert_type = "ABANDONED"
-        elif any(phone_results.get(pid, {}).get("misuse", False) for pid in phone_results):
-            alert_type = "PHONE"
 
         # Handle alert logic
         if alert_type == "CONFLICT":
@@ -860,11 +852,6 @@ def main():
                     event_logger.log("abandon", "Abandoned object detected!", config.ALERT_COOLDOWN)
                 audio_manager.start_alarm()
                 alarm_active = True
-
-        elif alert_type == "PHONE":
-            active_alert = "SUSPICIOUS PHONE RECORDING"
-            alert_start_time = current_time
-            # Optional: no alarm for phone behavior
 
         else:
             # No alert active - stop alarm if enough time has passed
@@ -923,15 +910,6 @@ def main():
                     color = (0, 0, 255)
                 label = f"{class_name} ID:{obj_id}"
 
-                if obj_id in phone_results:
-                    phone_state = phone_results[obj_id]["state"]
-                    misuse = phone_results[obj_id]["misuse"]
-
-                    label += f" | Phone: {phone_state}"
-
-                    if misuse:
-                        color = (0, 165, 255)
-
                 if cls == config.PERSON and obj_id in scores:
                     level = scorer.get_level(scores[obj_id])
                     label += f" | Threat: {level}"
@@ -977,16 +955,25 @@ def main():
             else:
                 active_alert = None
 
-        panel_width = 300
+        # Create extended canvas for camera preview + side panel
+        panel_width = 350
         h, w, _ = frame_copy.shape
+        extended_frame = np.zeros((h, w + panel_width, 3), dtype=np.uint8)
+        
+        # Copy camera preview to left side
+        extended_frame[:, :w] = frame_copy
+        
+        # Draw dark panel background on right side
+        extended_frame[:, w:] = (30, 30, 30)
 
-        cv2.rectangle(frame_copy, (w - panel_width, 0), (w, h), (30, 30, 30), -1)
-
+        # Draw panel content on the right side
+        panel_x = w  # Start of panel area
+        
         y_offset = 40
         cv2.putText(
-            frame_copy,
+            extended_frame,
             "RISK PANEL",
-            (w - panel_width + 20, 30),
+            (panel_x + 20, 30),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.7,
             (0, 255, 255),
@@ -1004,9 +991,9 @@ def main():
                 color = (0, 0, 255)
 
             cv2.putText(
-                frame_copy,
+                extended_frame,
                 text,
-                (w - panel_width + 20, y_offset),
+                (panel_x + 20, y_offset),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.6,
                 color,
@@ -1018,15 +1005,18 @@ def main():
         event_y = h - 100
         for _, msg in recent:
             cv2.putText(
-                frame_copy,
+                extended_frame,
                 msg,
-                (w - panel_width + 20, event_y),
+                (panel_x + 20, event_y),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.5,
                 (255, 255, 255),
                 1,
             )
             event_y += 20
+        
+        # Use extended frame as the display frame
+        frame_copy = extended_frame
 
         display_frame = frame_copy
         if DISPLAY_SCALE != 1.0:

@@ -29,7 +29,7 @@ FONT_SCALE = 0.7
 FONT_THICKNESS = 2
 
 # Auto-save configuration
-SAVE_FRAMES = False
+SAVE_FRAMES = True
 SAVE_CONFIDENCE = 0.5
 MOVEMENT_THRESHOLD = 30  # pixels
 

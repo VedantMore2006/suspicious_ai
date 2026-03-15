@@ -6,6 +6,8 @@
 
 # Python bytecode files
 *.pyc
+*.csv
+*.png
 # Python 3 cache directories
 __pycache__/
 

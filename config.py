@@ -84,7 +84,7 @@ ALERT_BANNER_DURATION = 3  # seconds
 # ===============================
 
 ENABLE_BEEP = True
-ALERT_SOUND_PATH = "assets/alert.mp3"
+ALERT_SOUND_PATH = "/home/vedant/suspicious_ai/assets/alert.mp3"
 AUDIO_VOLUME = 0.8
 
 # ===============================

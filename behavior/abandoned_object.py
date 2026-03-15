@@ -17,7 +17,7 @@ class AbandonedObjectDetector:
         for obj in tracked_objects:
             if obj["class"] == config.PERSON:
                 persons.append(obj)
-            elif obj["class"] in [config.BACKPACK, config.HANDBAG, config.SUITCASE]:
+            elif obj["class"] in [config.BACKPACK, config.HANDBAG]:
                 bags.append(obj)
 
         active_bag_ids = []

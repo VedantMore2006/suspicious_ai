@@ -1,0 +1,67 @@
+# Python bytecode
+/home/vedant/Facial_analysis/src/__pycache__/*
+*.py[cod]
+*$py.class
+*.pyc
+
+# Python bytecode files
+*.pyc
+# Python 3 cache directories
+__pycache__/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Packaging / build
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs
+*.log
+logs/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE / editor
+.vscode/
+.idea/
+
+# Local env files
+.env
+.env.*
+
+# Project artifacts
+
+
+
+# Media outputs
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.pyc
+# Images generated during runs
+*.jpg
+
+
+# Misc
+*.tmp
+*.bak

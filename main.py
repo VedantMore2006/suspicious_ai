@@ -22,7 +22,7 @@ def main():
     loiter_detector = LoiteringDetector()
     event_logger = EventLogger()
     audio_manager = AudioManager()
-    alarm_active = False
+    alarm_active = True
     last_abandon_detect_time = 0
     ALARM_STABILITY_BUFFER = 0.5  # seconds
     active_alert = None

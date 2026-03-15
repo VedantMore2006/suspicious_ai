@@ -203,6 +203,31 @@ During/after execution, these outputs can appear:
 - `behavior/phone_usage.py` and `utils/fps.py` are placeholders (empty).
 - For better model accuracy/performance tradeoffs, you can swap `yolov8n.pt` with another YOLOv8 variant.
 
+## Limitations
+
+### Behavioral Detection
+- **Loitering does not trigger audio** — it only changes bounding box color and updates the threat score. The alarm only fires for `CONFLICT` and `ABANDONED` states.
+- **Conflict detection has no pose awareness** — it is based purely on proximity, bounding-box velocity, and area change. Two people standing close together, hugging, or shaking hands can trigger false positives.
+- **Loitering timer resets on re-entry** — if a person leaves the frame and comes back, their stationary timer starts fresh; repeat loitering across separate visits is not tracked.
+- **Abandoned object distance is pixel-based** — `ABANDON_DISTANCE` is measured in screen pixels, so its effective real-world range changes with camera zoom, angle, or resolution.
+- **Phone behavior is unfinished** — `PhoneBehaviorDetector` is implemented but not wired into the main loop or the scoring system yet.
+
+### Tracking and Detection
+- **Single camera only** — the system reads one `CAMERA_SOURCE` at a time; there is no multi-feed or multi-camera support.
+- **Limited detection classes** — only `PERSON`, `BACKPACK`, `HANDBAG`, and `CELL_PHONE` (COCO IDs) are tracked. Other suspicious items (e.g. suitcases, weapons) are ignored by default.
+- **Low-light / occlusion sensitivity** — YOLOv8n is a lightweight model. Detection quality degrades in poor lighting, heavy occlusion, or at long distances.
+- **No re-identification across sessions** — tracking IDs are local to a single run. The same person will get a new ID if the process restarts.
+
+### Data and Storage
+- **All state is in-memory** — session scores, event timeline, and behavior history are lost when the process exits. There is no database or log file written at runtime.
+- **`ENABLE_BEEP` is defined twice in `config.py`** — the second definition (`True`) silently overrides the first (`False`). This can cause confusion when trying to disable audio.
+- **No persistent FPS log during runtime** — FPS data is only written to `saves/fps_data.csv` and `saves/fps_plot.png` at clean shutdown; a crash discards all FPS history.
+
+### Infrastructure
+- **No authentication or access control** — the camera feed and saves directory are not protected; deployment in a shared or networked environment requires additional hardening.
+- **No GPU auto-detection** — inference runs on whichever device PyTorch defaults to. On CPU-only machines, real-time performance may drop significantly.
+- **Display requires a screen** — the system uses `cv2.imshow`, which needs a display/X11 session. Headless or server deployments require additional configuration.
+
 ## Future Improvements (Suggested)
 
 - Integrate `PhoneBehaviorDetector` into the main loop.

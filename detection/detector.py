@@ -3,9 +3,13 @@ import config
 
 
 class Detector:
-    def __init__(self, model_path="yolov8n.pt"):
+    def __init__(self, model_path=None):
+        if model_path is None:
+            model_path = config.MODEL_PATH
         self.model = YOLO(model_path)
-        self.model.fuse()
+        # fuse() only applies to PyTorch models, not ONNX
+        if not str(model_path).endswith(".onnx"):
+            self.model.fuse()
 
     def detect(self, frame):
         # Track objects with configured thresholds and no console spam

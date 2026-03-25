@@ -1,0 +1,1396 @@
+================================================================================
+PROJECT EXTRACTION REPORT
+================================================================================
+
+PROJECT STRUCTURE:
+--------------------------------------------------------------------------------
+
+suspicious_ai/
+├── README.md
+├── config.py
+├── extract_project.py
+├── main.py
+├── project_extraction.txt
+├── requirements.txt
+├── yolov8n.pt
+├── assets/
+│   └── alert.mp3
+├── behavior/
+│   ├── __init__.py
+│   ├── abandoned_object.py
+│   ├── conflict_detection.py
+│   ├── loitering.py
+│   ├── phone_behavior.py
+│   ├── phone_usage.py
+│   └── scoring.py
+├── data/
+├── detection/
+│   ├── __init__.py
+│   └── detector.py
+├── saves/
+│   ├── detected_person_20260315_212923_817820.jpg
+│   ├── detected_person_20260315_212924_826479.jpg
+│   ├── detected_person_20260315_212925_834245.jpg
+│   ├── detected_person_20260315_212926_853122.jpg
+│   ├── detected_person_20260315_212927_898273.jpg
+│   ├── detected_person_20260315_212928_938017.jpg
+│   ├── detected_person_20260315_212929_986536.jpg
+│   ├── detected_person_20260315_212931_052643.jpg
+│   ├── detected_person_20260315_212932_128769.jpg
+│   ├── detected_person_20260315_212933_166716.jpg
+│   ├── detected_person_20260315_212934_200548.jpg
+│   ├── detected_person_20260315_212935_252945.jpg
+│   ├── detected_person_20260315_212936_340305.jpg
+│   ├── detected_person_20260315_212937_379840.jpg
+│   ├── detected_person_20260315_213110_433269.jpg
+│   ├── detected_person_20260315_213111_481434.jpg
+│   ├── detected_person_20260315_213112_502264.jpg
+│   ├── detected_person_20260315_213113_540811.jpg
+│   ├── detected_person_20260315_213114_609115.jpg
+│   ├── detected_person_20260315_213115_625908.jpg
+│   ├── detected_person_20260315_213116_674771.jpg
+│   ├── detected_person_20260315_213117_684348.jpg
+│   ├── detected_person_20260315_213118_742087.jpg
+│   ├── detected_person_20260315_213119_751097.jpg
+│   ├── detected_person_20260315_213120_755323.jpg
+│   ├── detected_person_20260315_213121_789900.jpg
+│   ├── detected_person_20260315_213122_870204.jpg
+│   ├── detected_person_20260315_213123_899039.jpg
+│   ├── detected_person_20260315_213124_936762.jpg
+│   ├── detected_person_20260315_213125_945269.jpg
+│   ├── detected_person_20260315_213126_990388.jpg
+│   ├── detected_person_20260315_213128_030748.jpg
+│   ├── detected_person_20260315_213129_035805.jpg
+│   ├── detected_person_20260315_213130_040710.jpg
+│   ├── detected_person_20260315_213131_150085.jpg
+│   ├── detected_person_20260315_213132_184814.jpg
+│   ├── detected_person_20260315_213132_369294.jpg
+│   ├── detected_person_20260315_213133_456876.jpg
+│   ├── detected_person_20260315_213134_537178.jpg
+│   ├── detected_person_20260315_213135_623057.jpg
+│   ├── detected_person_20260315_213136_645308.jpg
+│   ├── detected_person_20260315_213137_705243.jpg
+│   ├── detected_person_20260315_213138_721172.jpg
+│   ├── detected_person_20260315_213139_848041.jpg
+│   ├── detected_person_20260315_213140_989359.jpg
+│   ├── detected_person_20260315_213142_087053.jpg
+│   ├── detected_person_20260315_213143_214869.jpg
+│   ├── detected_person_20260315_213144_235979.jpg
+│   ├── detected_person_20260315_213526_877805.jpg
+│   ├── detected_person_20260315_213527_948346.jpg
+│   ├── detected_person_20260315_213528_978126.jpg
+│   ├── detected_person_20260315_213530_056380.jpg
+│   ├── detected_person_20260315_213531_143842.jpg
+│   ├── detected_person_20260315_213532_204156.jpg
+│   ├── detected_person_20260315_213533_252500.jpg
+│   ├── detected_person_20260315_213534_291821.jpg
+│   ├── detected_person_20260315_213535_362019.jpg
+│   ├── detected_person_20260315_213536_413027.jpg
+│   ├── detected_person_20260315_213537_440590.jpg
+│   ├── detected_person_20260315_213537_553087.jpg
+│   ├── fps_data.csv
+│   └── fps_plot.png
+└── utils/
+    ├── __init__.py
+    ├── audio.py
+    ├── drawing.py
+    ├── event_logger.py
+    ├── fps.py
+    ├── fps_tracker.py
+    └── geometry.py
+
+
+================================================================================
+FILE CONTENTS
+================================================================================
+
+
+================================================================================
+FILE: behavior/__init__.py
+================================================================================
+
+
+
+================================================================================
+FILE: behavior/abandoned_object.py
+================================================================================
+
+import time
+import config
+from utils.geometry import get_center, distance
+
+
+class AbandonedObjectDetector:
+    def __init__(self):
+        self.bag_state = {}
+
+    def update(self, tracked_objects):
+        current_time = time.time()
+        suspicious_bags = []
+
+        persons = []
+        bags = []
+
+        for obj in tracked_objects:
+            if obj["class"] == config.PERSON:
+                persons.append(obj)
+            elif obj["class"] in [config.BACKPACK, config.HANDBAG]:
+                bags.append(obj)
+
+        active_bag_ids = []
+
+        for bag in bags:
+            bag_id = bag["id"]
+            active_bag_ids.append(bag_id)
+
+            bag_center = get_center(bag["bbox"])
+            nearest_person_dist = float("inf")
+
+            for person in persons:
+                person_center = get_center(person["bbox"])
+                dist = distance(bag_center, person_center)
+                if dist < nearest_person_dist:
+                    nearest_person_dist = dist
+
+            if bag_id not in self.bag_state:
+                self.bag_state[bag_id] = {
+                    "last_seen": current_time,
+                    "last_near_time": current_time,
+                    "abandoned": False
+                }
+
+            state = self.bag_state[bag_id]
+            state["last_seen"] = current_time
+
+            # If someone is near bag
+            if nearest_person_dist < config.ABANDON_DISTANCE:
+                state["last_near_time"] = current_time
+                state["abandoned"] = False
+
+            else:
+                time_away = current_time - state["last_near_time"]
+
+                if time_away > config.ABANDON_TIME:
+                    state["abandoned"] = True
+
+            if state["abandoned"]:
+                suspicious_bags.append(bag_id)
+
+        # Grace period for flicker (IMPORTANT)
+        GRACE_PERIOD = 0.7  # seconds
+
+        for saved_id in list(self.bag_state.keys()):
+            state = self.bag_state[saved_id]
+
+            # If bag not seen recently
+            if current_time - state["last_seen"] > GRACE_PERIOD:
+                del self.bag_state[saved_id]
+
+        return suspicious_bags
+
+================================================================================
+FILE: behavior/conflict_detection.py
+================================================================================
+
+import config
+import time
+import math
+
+
+class ConflictDetector:
+    def __init__(self):
+        self.history = {}
+        self.confirm_counter = 0
+
+    def compute_center(self, bbox):
+        x1, y1, x2, y2 = bbox
+        return ((x1 + x2) / 2, (y1 + y2) / 2)
+
+    def compute_area(self, bbox):
+        x1, y1, x2, y2 = bbox
+        return (x2 - x1) * (y2 - y1)
+
+    def update(self, tracked_objects):
+        if not config.ENABLE_CONFLICT_DETECTION:
+            return False
+
+        persons = [obj for obj in tracked_objects if obj["class"] == config.PERSON]
+
+        if len(persons) < 2:
+            self.confirm_counter = 0
+            return False
+
+        current_time = time.time()
+        conflict = False
+
+        for i in range(len(persons)):
+            for j in range(i + 1, len(persons)):
+
+                idA = persons[i]["id"]
+                idB = persons[j]["id"]
+
+                centerA = self.compute_center(persons[i]["bbox"])
+                centerB = self.compute_center(persons[j]["bbox"])
+
+                areaA = self.compute_area(persons[i]["bbox"])
+                areaB = self.compute_area(persons[j]["bbox"])
+
+                distance = math.hypot(centerA[0] - centerB[0], centerA[1] - centerB[1])
+
+                if distance > config.PROXIMITY_DISTANCE:
+                    continue
+
+                pair_key = tuple(sorted((idA, idB)))
+
+                if pair_key not in self.history:
+                    self.history[pair_key] = {
+                        "prev_distance": distance,
+                        "prev_velocity": 0,
+                        "prev_areaA": areaA,
+                        "prev_areaB": areaB,
+                        "prev_time": current_time
+                    }
+                    continue
+
+                prev = self.history[pair_key]
+
+                dt = current_time - prev["prev_time"]
+                if dt == 0:
+                    continue
+
+                velocity = (distance - prev["prev_distance"]) / dt
+                acceleration = (velocity - prev["prev_velocity"]) / dt
+
+                area_changeA = abs(areaA - prev["prev_areaA"]) / (prev["prev_areaA"] + 1e-5)
+                area_changeB = abs(areaB - prev["prev_areaB"]) / (prev["prev_areaB"] + 1e-5)
+
+                if (
+                    abs(velocity) > config.DISTANCE_VELOCITY_THRESHOLD
+                    and abs(acceleration) > config.ACCELERATION_THRESHOLD
+                ) or (
+                    area_changeA > config.AREA_CHANGE_THRESHOLD
+                    or area_changeB > config.AREA_CHANGE_THRESHOLD
+                ):
+                    conflict = True
+
+                self.history[pair_key] = {
+                    "prev_distance": distance,
+                    "prev_velocity": velocity,
+                    "prev_areaA": areaA,
+                    "prev_areaB": areaB,
+                    "prev_time": current_time
+                }
+
+        if conflict:
+            self.confirm_counter += 1
+        else:
+            self.confirm_counter = 0
+
+        return self.confirm_counter >= config.CONFLICT_CONFIRM_FRAMES
+
+
+================================================================================
+FILE: behavior/loitering.py
+================================================================================
+
+import time
+import config
+from utils.geometry import get_center, distance
+
+
+class LoiteringDetector:
+    def __init__(self):
+        self.person_state = {}
+
+    def update(self, tracked_objects):
+        current_time = time.time()
+        suspicious_ids = []
+
+        for obj in tracked_objects:
+            obj_id = obj["id"]
+            cls = obj["class"]
+            bbox = obj["bbox"]
+
+            if cls != config.PERSON:
+                continue
+
+            cx, cy = get_center(bbox)
+
+            if obj_id not in self.person_state:
+                self.person_state[obj_id] = {
+                    "first_seen": current_time,
+                    "last_position": (cx, cy),
+                    "last_move_time": current_time,
+                    "loiter_flag": False
+                }
+                continue
+
+            state = self.person_state[obj_id]
+            prev_pos = state["last_position"]
+
+            move_dist = distance(prev_pos, (cx, cy))
+
+            if move_dist > config.LOITER_MOVEMENT_THRESHOLD:
+                state["last_move_time"] = current_time
+                state["last_position"] = (cx, cy)
+
+            stationary_time = current_time - state["last_move_time"]
+
+            if stationary_time > config.LOITER_TIME:
+                state["loiter_flag"] = True
+                suspicious_ids.append(obj_id)
+
+        active_ids = [obj["id"] for obj in tracked_objects]
+        for saved_id in list(self.person_state.keys()):
+            if saved_id not in active_ids:
+                del self.person_state[saved_id]
+
+        return suspicious_ids
+
+================================================================================
+FILE: behavior/phone_behavior.py
+================================================================================
+
+import config
+import time
+import math
+
+
+class PhoneBehaviorDetector:
+    def __init__(self):
+        self.prev_phone_positions = {}
+        self.confirm_counter = {}
+
+    def get_vertical_zone(self, phone_center_y, person_bbox):
+        x1, y1, x2, y2 = person_bbox
+        height = y2 - y1
+
+        relative_y = phone_center_y - y1
+        ratio = relative_y / height
+
+        if ratio < config.PHONE_FACE_ZONE:
+            return "ACTIVE"
+        elif ratio < config.PHONE_TORSO_ZONE:
+            return "HOLDING"
+        else:
+            return "POCKET"
+
+    def update(self, tracked_objects):
+
+        if not config.ENABLE_PHONE_BEHAVIOR:
+            return {}
+
+        persons = [o for o in tracked_objects if o["class"] == config.PERSON]
+        phones = [o for o in tracked_objects if o["class"] == config.CELL_PHONE]
+
+        results = {}
+        current_time = time.time()
+
+        for person in persons:
+            pid = person["id"]
+            px1, py1, px2, py2 = person["bbox"]
+            person_center_x = (px1 + px2) / 2
+
+            nearest_phone = None
+            min_dist = float("inf")
+
+            for phone in phones:
+                fx1, fy1, fx2, fy2 = phone["bbox"]
+                phone_center = ((fx1 + fx2) / 2, (fy1 + fy2) / 2)
+
+                # simple horizontal proximity check
+                if px1 <= phone_center[0] <= px2:
+                    dist = abs(phone_center[0] - person_center_x)
+                    if dist < min_dist:
+                        min_dist = dist
+                        nearest_phone = phone
+
+            if nearest_phone is None:
+                continue
+
+            fx1, fy1, fx2, fy2 = nearest_phone["bbox"]
+            phone_center = ((fx1 + fx2) / 2, (fy1 + fy2) / 2)
+
+            state = self.get_vertical_zone(phone_center[1], person["bbox"])
+
+            misuse = False
+
+            # Detect rapid phone raise (possible recording)
+            if pid in self.prev_phone_positions:
+                prev = self.prev_phone_positions[pid]
+                dt = current_time - prev["time"]
+
+                if dt > 0:
+                    velocity_y = (prev["pos"][1] - phone_center[1]) / dt
+
+                    if velocity_y > config.PHONE_RAISE_SPEED_THRESHOLD:
+                        misuse = True
+
+            self.prev_phone_positions[pid] = {
+                "pos": phone_center,
+                "time": current_time
+            }
+
+            # Confirmation logic
+            if misuse:
+                if pid not in self.confirm_counter:
+                    self.confirm_counter[pid] = 0
+                self.confirm_counter[pid] += 1
+            else:
+                self.confirm_counter[pid] = 0
+
+            if self.confirm_counter.get(pid, 0) >= config.PHONE_MISUSE_CONFIRM_FRAMES:
+                misuse = True
+            else:
+                misuse = False
+
+            results[pid] = {
+                "state": state,
+                "misuse": misuse
+            }
+
+        return results
+
+
+================================================================================
+FILE: behavior/phone_usage.py
+================================================================================
+
+
+
+================================================================================
+FILE: behavior/scoring.py
+================================================================================
+
+import config
+
+
+class ThreatScorer:
+    def __init__(self):
+        self.instant_scores = {}
+        self.session_scores = {}
+
+    def update(self, tracked_objects, loiter_ids, abandoned_bags, conflict_flag):
+        persons = [o for o in tracked_objects if o["class"] == config.PERSON]
+
+        current_ids = set()
+
+        for person in persons:
+            pid = person["id"]
+            current_ids.add(pid)
+
+            score = 0
+
+            if pid in loiter_ids:
+                score += 1
+
+            if conflict_flag:
+                score += 4
+
+            if abandoned_bags:
+                score += 2
+
+            self.instant_scores[pid] = score
+
+            if pid not in self.session_scores:
+                self.session_scores[pid] = 0
+
+            # Only add if non-zero event
+            if score > 0:
+                self.session_scores[pid] += score
+
+        # Remove IDs no longer present
+        for saved_id in list(self.instant_scores.keys()):
+            if saved_id not in current_ids:
+                del self.instant_scores[saved_id]
+
+        return self.instant_scores, self.session_scores
+
+    def get_level(self, score):
+        if score >= 5:
+            return "HIGH"
+        elif score >= 3:
+            return "SUSPICIOUS"
+        else:
+            return "NORMAL"
+
+================================================================================
+FILE: config.py
+================================================================================
+
+# config.py
+
+# Camera configuration
+CAMERA_SOURCE = 0
+SHOW_FPS = True
+
+FRAME_WIDTH = 640
+FRAME_HEIGHT = 480
+
+# ===============================
+# DISPLAY CONFIGURATION
+# ===============================
+
+WINDOW_NAME = "Suspicious Behavior Detector"
+
+# Modes: "normal", "resizable", "maximized", "fullscreen"
+WINDOW_MODE = "normal"
+
+# Used only if mode == "resizable"
+WINDOW_WIDTH = 1200
+WINDOW_HEIGHT = 800
+
+# Scale factor applied ONLY to display (not detection)
+DISPLAY_SCALE = 1.6  # 1.0 = original, 1.5 = 150%, etc.
+
+# Drawing appearance
+BOX_THICKNESS = 2
+FONT_SCALE = 0.7
+FONT_THICKNESS = 2
+
+# Auto-save configuration
+SAVE_FRAMES = False
+SAVE_CONFIDENCE = 0.5
+MOVEMENT_THRESHOLD = 30  # pixels
+
+CONFIDENCE = 0.2
+IOU_THRESHOLD = 0.5
+IMG_SIZE = 416
+# IMG_SIZE = 640
+# IMG_SIZE = 256
+# IMG_SIZE = 320
+
+# Classes (COCO indices)
+PERSON = 0
+BACKPACK = 24
+HANDBAG = 26
+#SUITCASE = 28
+CELL_PHONE = 67
+
+DETECTION_CLASSES = [PERSON, BACKPACK, HANDBAG, CELL_PHONE]
+
+# Behavior thresholds
+LOITER_TIME = 3
+LOITER_MOVEMENT_THRESHOLD = 30
+
+ABANDON_TIME = 3
+ABANDON_DISTANCE = 130
+GRACE_PERIOD = 0.7
+PHONE_TIME = 5
+
+# ===============================
+# PHONE BEHAVIOR CONFIG
+# ===============================
+
+PHONE_FACE_ZONE = 0.3
+PHONE_TORSO_ZONE = 0.6
+
+PHONE_RAISE_SPEED_THRESHOLD = 80  # pixels/sec
+PHONE_MISUSE_CONFIRM_FRAMES = 3
+
+ENABLE_PHONE_BEHAVIOR = False
+
+SUSPICION_THRESHOLD = 3
+
+ENABLE_BEEP = True
+ENABLE_CONSOLE_LOG = True
+ALERT_COOLDOWN = 5  # seconds between repeated alerts
+
+SHOW_ALERT_BANNER = True
+ALERT_BANNER_DURATION = 3  # seconds
+
+# ===============================
+# AUDIO CONFIGURATION
+# ===============================
+
+ENABLE_BEEP = True
+ALERT_SOUND_PATH = "/home/vedant/suspicious_ai/assets/alert.mp3"
+AUDIO_VOLUME = 0.8
+
+# ===============================
+# ADVANCED CONFLICT DETECTION
+# ===============================
+
+ENABLE_CONFLICT_DETECTION = True
+
+PROXIMITY_DISTANCE = 200  # pixels
+DISTANCE_VELOCITY_THRESHOLD = 40  # pixels/second
+ACCELERATION_THRESHOLD = 40
+AREA_CHANGE_THRESHOLD = 0.20  # 25%
+CONFLICT_CONFIRM_FRAMES = 2
+
+================================================================================
+FILE: detection/__init__.py
+================================================================================
+
+
+
+================================================================================
+FILE: detection/detector.py
+================================================================================
+
+from ultralytics import YOLO
+import config
+
+
+class Detector:
+    def __init__(self, model_path="yolov8n.pt"):
+        self.model = YOLO(model_path)
+        self.model.fuse()
+
+    def detect(self, frame):
+        # Track objects with configured thresholds and no console spam
+        results = self.model.track(
+            frame,
+            imgsz=config.IMG_SIZE,
+            conf=config.CONFIDENCE,
+            iou=config.IOU_THRESHOLD,
+            classes=config.DETECTION_CLASSES,
+            persist=True,
+            tracker="bytetrack.yaml",
+            verbose=False,
+        )
+        return results[0]
+
+================================================================================
+FILE: extract_project.py
+================================================================================
+
+#!/usr/bin/env python3
+"""
+Extract all Python files with their content and project structure into a single text file.
+"""
+
+import os
+import sys
+from pathlib import Path
+
+
+def get_project_structure(root_dir, prefix="", max_depth=10, current_depth=0, ignore_dirs=None):
+    """Generate a text representation of the project structure."""
+    if ignore_dirs is None:
+        ignore_dirs = {".git", "__pycache__", ".pytest_cache", "*.egg-info", ".venv", "venv", "env"}
+    
+    if current_depth >= max_depth:
+        return ""
+    
+    structure = ""
+    try:
+        items = sorted(os.listdir(root_dir))
+    except PermissionError:
+        return ""
+    
+    dirs = []
+    files = []
+    
+    for item in items:
+        # Skip hidden files/dirs and common ignore patterns
+        if item.startswith("."):
+            continue
+        if item in ignore_dirs or any(item.endswith(x.replace("*", "")) for x in ignore_dirs if "*" in x):
+            continue
+        
+        item_path = os.path.join(root_dir, item)
+        if os.path.isdir(item_path):
+            dirs.append(item)
+        else:
+            files.append(item)
+    
+    # Add files first
+    for i, file in enumerate(files):
+        is_last_file = (i == len(files) - 1) and len(dirs) == 0
+        structure += f"{prefix}{'└── ' if is_last_file else '├── '}{file}\n"
+    
+    # Add directories
+    for i, dir_name in enumerate(dirs):
+        is_last = i == len(dirs) - 1
+        structure += f"{prefix}{'└── ' if is_last else '├── '}{dir_name}/\n"
+        
+        dir_path = os.path.join(root_dir, dir_name)
+        extension = "    " if is_last else "│   "
+        structure += get_project_structure(dir_path, prefix + extension, max_depth, current_depth + 1, ignore_dirs)
+    
+    return structure
+
+
+def extract_python_files(root_dir, output_file):
+    """Extract all Python files and their content."""
+    py_files = []
+    
+    # Collect all Python files
+    for root, dirs, files in os.walk(root_dir):
+        # Skip certain directories
+        dirs[:] = [d for d in dirs if d not in {".git", "__pycache__", ".pytest_cache", ".venv", "venv", "env"}]
+        
+        for file in files:
+            if file.endswith(".py"):
+                file_path = os.path.join(root, file)
+                py_files.append(file_path)
+    
+    # Sort files for consistent output
+    py_files.sort()
+    
+    # Write to output file
+    with open(output_file, "w", encoding="utf-8") as out:
+        # Header
+        out.write("=" * 80 + "\n")
+        out.write("PROJECT EXTRACTION REPORT\n")
+        out.write("=" * 80 + "\n\n")
+        
+        # Project Structure
+        out.write("PROJECT STRUCTURE:\n")
+        out.write("-" * 80 + "\n\n")
+        out.write(f"{os.path.basename(root_dir)}/\n")
+        out.write(get_project_structure(root_dir))
+        out.write("\n\n")
+        
+        # File Contents
+        out.write("=" * 80 + "\n")
+        out.write("FILE CONTENTS\n")
+        out.write("=" * 80 + "\n\n")
+        
+        for file_path in py_files:
+            # Calculate relative path
+            rel_path = os.path.relpath(file_path, root_dir)
+            
+            # Write file header
+            out.write(f"\n{'=' * 80}\n")
+            out.write(f"FILE: {rel_path}\n")
+            out.write(f"{'=' * 80}\n\n")
+            
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                    out.write(content)
+            except Exception as e:
+                out.write(f"[ERROR] Could not read file: {str(e)}\n")
+            
+            out.write("\n")
+        
+        # Summary
+        out.write("\n" + "=" * 80 + "\n")
+        out.write(f"SUMMARY: {len(py_files)} Python files extracted\n")
+        out.write("=" * 80 + "\n")
+    
+    print(f"✓ Extraction complete!")
+    print(f"✓ Total Python files: {len(py_files)}")
+    print(f"✓ Output saved to: {output_file}")
+    print(f"✓ File size: {os.path.getsize(output_file) / 1024:.2f} KB")
+
+
+if __name__ == "__main__":
+    # Get project root (current directory)
+    project_root = os.getcwd()
+    
+    # Output file
+    output_filename = "project_extraction.txt"
+    output_path = os.path.join(project_root, output_filename)
+    
+    print(f"Extracting Python files from: {project_root}")
+    print(f"Output file: {output_path}\n")
+    
+    extract_python_files(project_root, output_path)
+
+
+================================================================================
+FILE: main.py
+================================================================================
+
+import cv2
+import numpy as np
+from detection.detector import Detector
+from config import CAMERA_SOURCE, SHOW_FPS, SAVE_CONFIDENCE, MOVEMENT_THRESHOLD, WINDOW_NAME, WINDOW_MODE, WINDOW_WIDTH, WINDOW_HEIGHT, DISPLAY_SCALE, BOX_THICKNESS, FONT_SCALE, FONT_THICKNESS, FRAME_WIDTH, FRAME_HEIGHT
+from utils.fps_tracker import FPSTracker
+from utils.drawing import setup_window
+from utils.event_logger import EventLogger
+from utils.audio import AudioManager
+from behavior.loitering import LoiteringDetector
+from behavior.conflict_detection import ConflictDetector
+from behavior.scoring import ThreatScorer
+import os
+import time
+from datetime import datetime
+from behavior.abandoned_object import AbandonedObjectDetector
+import config
+os.environ["QT_QPA_PLATFORM"] = "xcb"
+
+def main():
+    cap = cv2.VideoCapture(CAMERA_SOURCE)
+    detector = Detector()
+    loiter_detector = LoiteringDetector()
+    event_logger = EventLogger()
+    audio_manager = AudioManager()
+    alarm_active = True
+    last_abandon_detect_time = 0
+    ALARM_STABILITY_BUFFER = 0.5  # seconds
+    active_alert = None
+    alert_start_time = 0
+    
+    # Setup window based on configuration
+    setup_window()
+
+    # Create automation folder
+    save_dir = "saves"
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+    
+    prev_time = time.time()
+    fps = 0
+    fps_tracker = FPSTracker(save_dir=save_dir)
+    
+    # Track object positions and save times
+    object_positions = {}
+    last_save_time = {}
+
+    abandon_detector = AbandonedObjectDetector()
+    conflict_detector = ConflictDetector()
+    scorer = ThreatScorer()
+    
+    current_alert_state = "NONE"
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        frame = cv2.resize(frame, (640, 480))
+        results = detector.detect(frame)
+        
+        boxes = results.boxes
+        frame_copy = frame.copy()  # Copy for saving with bounding boxes
+        
+        tracked_objects = []
+        if boxes.id is not None:
+            ids = boxes.id.cpu().numpy().astype(int)
+            xyxy = boxes.xyxy.cpu().numpy()
+            classes = boxes.cls.cpu().numpy().astype(int)
+            confidences = boxes.conf.cpu().numpy()
+
+            for i in range(len(ids)):
+                x1, y1, x2, y2 = xyxy[i]
+                obj_id = ids[i]
+                cls = classes[i]
+
+                tracked_objects.append({
+                    "id": obj_id,
+                    "class": cls,
+                    "bbox": (x1, y1, x2, y2)
+                })
+
+        suspicious_ids = loiter_detector.update(tracked_objects)
+        suspicious_bags = abandon_detector.update(tracked_objects)
+        conflict_alert = conflict_detector.update(tracked_objects)
+        instant_scores, session_scores = scorer.update(
+            tracked_objects,
+            suspicious_ids,
+            suspicious_bags,
+            conflict_alert,
+        )
+
+        current_time = time.time()
+
+        # Determine new alert state based on priority
+        new_alert_state = "NONE"
+
+        if conflict_alert:
+            new_alert_state = "CONFLICT"
+        elif suspicious_bags:
+            new_alert_state = "ABANDONED"
+
+        # Only react if state changes
+        if new_alert_state != current_alert_state:
+            # Stop previous alarm if needed
+            if current_alert_state != "NONE":
+                audio_manager.stop_alarm()
+
+            if new_alert_state == "CONFLICT":
+                active_alert = "POSSIBLE PHYSICAL CONFLICT"
+                alert_start_time = current_time
+                audio_manager.start_alarm()
+                event_logger.log("conflict", "Possible physical conflict detected!", config.ALERT_COOLDOWN)
+
+            elif new_alert_state == "ABANDONED":
+                active_alert = "ABANDONED OBJECT DETECTED"
+                alert_start_time = current_time
+                audio_manager.start_alarm()
+                event_logger.log("abandon", "Abandoned object detected!", config.ALERT_COOLDOWN)
+
+            else:
+                active_alert = None
+
+            current_alert_state = new_alert_state
+
+        if boxes.id is not None:
+            check_time = time.time()
+            save_frame = False
+            detected_objects = []
+
+            for i in range(len(ids)):
+                x1, y1, x2, y2 = xyxy[i]
+                obj_id = ids[i]
+                cls = classes[i]
+                class_name = results.names[cls]
+
+                if config.SAVE_FRAMES and confidences[i] > SAVE_CONFIDENCE:
+                    # Calculate center position
+                    center_x = (x1 + x2) / 2
+                    center_y = (y1 + y2) / 2
+                    current_pos = (center_x, center_y)
+
+                    # Check for movement
+                    is_moving = False
+                    if obj_id in object_positions:
+                        prev_pos = object_positions[obj_id]
+                        distance = ((current_pos[0] - prev_pos[0])**2 +
+                                   (current_pos[1] - prev_pos[1])**2)**0.5
+                        if distance > MOVEMENT_THRESHOLD:
+                            is_moving = True
+
+                    # Update position
+                    object_positions[obj_id] = current_pos
+
+                    # Determine if we should save
+                    if obj_id not in last_save_time:
+                        last_save_time[obj_id] = 0
+
+                    time_since_last_save = check_time - last_save_time[obj_id]
+
+                    # Save logic: moving objects save immediately, stationary save once per second
+                    if is_moving or time_since_last_save >= 1.0:
+                        save_frame = True
+                        last_save_time[obj_id] = check_time
+                        if class_name not in detected_objects:
+                            detected_objects.append(class_name)
+
+                # Draw bounding box with object name
+                color = (0, 255, 0)
+                if obj_id in suspicious_ids:
+                    color = (0, 0, 255)
+                if obj_id in suspicious_bags:
+                    color = (0, 0, 255)
+                label = f"{class_name} ID:{obj_id}"
+
+                if cls == config.PERSON and obj_id in instant_scores:
+                    level = scorer.get_level(instant_scores[obj_id])
+                    session_total = session_scores.get(obj_id, 0)
+                    label += f" | Threat: {level} | Session: {session_total}"
+
+                cv2.rectangle(frame_copy, (int(x1), int(y1)), (int(x2), int(y2)), color, BOX_THICKNESS)
+                cv2.putText(frame_copy, label, (int(x1), int(y1)-10),
+                            cv2.FONT_HERSHEY_SIMPLEX, FONT_SCALE, color, FONT_THICKNESS)
+
+            # Save frame with bounding boxes if needed
+            if config.SAVE_FRAMES and save_frame and detected_objects:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                objects_str = "_".join(detected_objects)
+                filename = os.path.join(save_dir, f"detected_{objects_str}_{timestamp}.jpg")
+                cv2.imwrite(filename, frame_copy)
+                print(f"Saved: {filename}")
+        
+        # Calculate and display FPS
+        if SHOW_FPS:
+            current_time = time.time()
+            fps = 1 / (current_time - prev_time)
+            prev_time = current_time
+            fps_tracker.update(fps)
+            avg_fps = fps_tracker.get_average_fps()
+            cv2.putText(frame_copy, f"FPS: {fps:.1f} (Avg: {avg_fps:.1f})", (20, 40),
+                       cv2.FONT_HERSHEY_SIMPLEX, FONT_SCALE, (0, 255, 0), FONT_THICKNESS)
+
+        # Draw alert banner when active
+        if config.SHOW_ALERT_BANNER and active_alert:
+            if time.time() - alert_start_time < config.ALERT_BANNER_DURATION:
+                overlay = frame_copy.copy()
+                cv2.rectangle(overlay, (0, 0), (frame_copy.shape[1], 80), (0, 0, 255), -1)
+                cv2.addWeighted(overlay, 0.6, frame_copy, 0.4, 0, frame_copy)
+
+                cv2.putText(
+                    frame_copy,
+                    active_alert,
+                    (50, 50),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1.2,
+                    (255, 255, 255),
+                    3
+                )
+            else:
+                active_alert = None
+
+        # Create extended canvas for camera preview + side panel
+        panel_width = 350
+        h, w, _ = frame_copy.shape
+        extended_frame = np.zeros((h, w + panel_width, 3), dtype=np.uint8)
+        
+        # Copy camera preview to left side
+        extended_frame[:, :w] = frame_copy
+        
+        # Draw dark panel background on right side
+        extended_frame[:, w:] = (30, 30, 30)
+
+        # Draw panel content on the right side
+        panel_x = w  # Start of panel area
+        margin_left = 15
+        
+        # Panel title
+        y_offset = 35
+        cv2.putText(
+            extended_frame,
+            "THREAT ANALYSIS",
+            (panel_x + margin_left, y_offset),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (0, 255, 255),
+            2,
+        )
+        
+        # Separator line
+        y_offset += 10
+        cv2.line(
+            extended_frame,
+            (panel_x + margin_left, y_offset),
+            (panel_x + panel_width - margin_left, y_offset),
+            (100, 100, 100),
+            1
+        )
+        
+        # Active Threats section
+        y_offset += 30
+        cv2.putText(
+            extended_frame,
+            "ACTIVE THREATS:",
+            (panel_x + margin_left, y_offset),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (150, 150, 150),
+            1,
+        )
+        
+        y_offset += 25
+        
+        # Display each person's threat score
+        for pid, score in instant_scores.items():
+            level = scorer.get_level(score)
+            session_total = session_scores.get(pid, 0)
+            
+            # Determine color based on threat level
+            color = (0, 255, 0)
+            if level == "SUSPICIOUS":
+                color = (0, 165, 255)
+            elif level == "HIGH":
+                color = (0, 0, 255)
+            
+            # ID label
+            cv2.putText(
+                extended_frame,
+                f"ID {pid}:",
+                (panel_x + margin_left + 10, y_offset),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (200, 200, 200),
+                1,
+            )
+            
+            # Threat level
+            cv2.putText(
+                extended_frame,
+                level,
+                (panel_x + margin_left + 70, y_offset),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                color,
+                2,
+            )
+            
+            # Current score
+            cv2.putText(
+                extended_frame,
+                f"({score})",
+                (panel_x + margin_left + 185, y_offset),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (180, 180, 180),
+                1,
+            )
+            
+            y_offset += 22
+            
+            # Session total on next line
+            cv2.putText(
+                extended_frame,
+                f"  Session Total: {session_total}",
+                (panel_x + margin_left + 10, y_offset),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.45,
+                (150, 150, 150),
+                1,
+            )
+            
+            y_offset += 28
+        
+        # Event Timeline section
+        if event_logger.timeline:
+            y_offset = max(y_offset + 20, h - 150)
+            
+            cv2.putText(
+                extended_frame,
+                "EVENT TIMELINE:",
+                (panel_x + margin_left, y_offset),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (150, 150, 150),
+                1,
+            )
+            
+            y_offset += 25
+            
+            recent = event_logger.timeline[-3:]
+            for _, msg in recent:
+                # Truncate message if too long
+                display_msg = msg[:30] + "..." if len(msg) > 30 else msg
+                cv2.putText(
+                    extended_frame,
+                    f"• {display_msg}",
+                    (panel_x + margin_left + 5, y_offset),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.4,
+                    (255, 255, 255),
+                    1,
+                )
+                y_offset += 20
+        
+        # Use extended frame as the display frame
+        frame_copy = extended_frame
+
+        display_frame = frame_copy
+        if DISPLAY_SCALE != 1.0:
+            display_frame = cv2.resize(
+                frame_copy,
+                None,
+                fx=DISPLAY_SCALE,
+                fy=DISPLAY_SCALE
+            )
+
+        cv2.imshow(WINDOW_NAME, display_frame)
+
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+    # Save FPS data and plot at the end of session
+    fps_tracker.finalize()
+    
+    cap.release()
+    cv2.destroyAllWindows()
+
+
+if __name__ == "__main__":
+    main()
+
+================================================================================
+FILE: utils/__init__.py
+================================================================================
+
+
+
+================================================================================
+FILE: utils/audio.py
+================================================================================
+
+import pygame
+import config
+
+
+class AudioManager:
+    def __init__(self):
+        self.enabled = config.ENABLE_BEEP
+        self.initialized = False
+        self.alarm_playing = False
+
+        if self.enabled:
+            try:
+                pygame.mixer.init()
+                self.sound = pygame.mixer.Sound(config.ALERT_SOUND_PATH)
+                self.sound.set_volume(config.AUDIO_VOLUME)
+                self.initialized = True
+            except Exception as e:
+                print(f"[Audio Error] {e}")
+                self.enabled = False
+
+    def start_alarm(self):
+        if not self.enabled or not self.initialized:
+            return
+
+        if not self.alarm_playing:
+            self.sound.play(loops=-1)  # infinite loop
+            self.alarm_playing = True
+
+    def stop_alarm(self):
+        if not self.enabled or not self.initialized:
+            return
+
+        if self.alarm_playing:
+            self.sound.stop()
+            self.alarm_playing = False
+
+================================================================================
+FILE: utils/drawing.py
+================================================================================
+
+import cv2
+import config
+
+
+def setup_window():
+    """Setup window based on WINDOW_MODE configuration."""
+    mode = config.WINDOW_MODE
+    name = config.WINDOW_NAME
+
+    if mode == "normal":
+        cv2.namedWindow(name, cv2.WINDOW_AUTOSIZE)
+
+    elif mode == "resizable":
+        cv2.namedWindow(name, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(name, config.WINDOW_WIDTH, config.WINDOW_HEIGHT)
+
+    elif mode == "maximized":
+        cv2.namedWindow(name, cv2.WINDOW_NORMAL)
+        cv2.setWindowProperty(name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+        cv2.setWindowProperty(name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_NORMAL)
+
+    elif mode == "fullscreen":
+        cv2.namedWindow(name, cv2.WINDOW_NORMAL)
+        cv2.setWindowProperty(name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+
+    else:
+        raise ValueError(f"Invalid WINDOW_MODE: {mode}")
+
+
+================================================================================
+FILE: utils/event_logger.py
+================================================================================
+
+import time
+
+
+class EventLogger:
+    def __init__(self):
+        self.last_events = {}
+        self.timeline = []
+
+    def log(self, event_type, message, cooldown=5):
+        current_time = time.time()
+
+        if event_type not in self.last_events:
+            self.last_events[event_type] = 0
+
+        if current_time - self.last_events[event_type] > cooldown:
+            print(f"[ALERT] {message}")
+            self.last_events[event_type] = current_time
+            self.timeline.append((current_time, message))
+
+
+================================================================================
+FILE: utils/fps.py
+================================================================================
+
+
+
+================================================================================
+FILE: utils/fps_tracker.py
+================================================================================
+
+import matplotlib.pyplot as plt
+import time
+from collections import deque
+import os
+import csv
+
+
+class FPSTracker:
+    def __init__(self, max_samples=300, save_dir="saves"):
+        self.fps_history = deque(maxlen=max_samples)
+        self.time_history = deque(maxlen=max_samples)
+        self.start_time = time.time()
+        self.save_dir = save_dir
+        self.csv_file = os.path.join(save_dir, 'fps_data.csv')
+        self.plot_file = os.path.join(save_dir, 'fps_plot.png')
+        
+        if not os.path.exists(save_dir):
+            os.makedirs(save_dir)
+    
+    def update(self, fps):
+        """Add a new FPS measurement"""
+        current_time = time.time() - self.start_time
+        self.fps_history.append(fps)
+        self.time_history.append(current_time)
+    
+    def save_csv(self):
+        """Save FPS data to CSV file"""
+        if len(self.fps_history) == 0:
+            return
+        
+        with open(self.csv_file, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['Time (seconds)', 'FPS'])
+            for time_val, fps_val in zip(self.time_history, self.fps_history):
+                writer.writerow([f'{time_val:.2f}', f'{fps_val:.1f}'])
+        
+        print(f"FPS data saved: {self.csv_file}")
+    
+    def save_plot(self):
+        """Generate and save FPS plot"""
+        if len(self.fps_history) < 2:
+            return
+        
+        plt.figure(figsize=(10, 6))
+        plt.plot(list(self.time_history), list(self.fps_history), 'b-', linewidth=1)
+        plt.xlabel('Time (seconds)', fontsize=12)
+        plt.ylabel('FPS', fontsize=12)
+        plt.title('FPS Performance Over Time', fontsize=14, fontweight='bold')
+        plt.grid(True, alpha=0.3)
+        
+        # Add statistics
+        avg_fps = sum(self.fps_history) / len(self.fps_history)
+        min_fps = min(self.fps_history)
+        max_fps = max(self.fps_history)
+        
+        stats_text = f'Avg: {avg_fps:.1f} | Min: {min_fps:.1f} | Max: {max_fps:.1f}'
+        plt.text(0.02, 0.98, stats_text, transform=plt.gca().transAxes,
+                fontsize=10, verticalalignment='top',
+                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+        
+        plt.tight_layout()
+        
+        plt.savefig(self.plot_file, dpi=100)
+        plt.close()
+        print(f"FPS plot saved: {self.plot_file}")
+    
+    def finalize(self):
+        """Save CSV and plot at the end of session"""
+        self.save_csv()
+        self.save_plot()
+    
+    def get_average_fps(self):
+        """Get current average FPS"""
+        if len(self.fps_history) == 0:
+            return 0
+        return sum(self.fps_history) / len(self.fps_history)
+
+
+================================================================================
+FILE: utils/geometry.py
+================================================================================
+
+import math
+
+
+def get_center(bbox):
+    x1, y1, x2, y2 = bbox
+    return int((x1 + x2) / 2), int((y1 + y2) / 2)
+
+
+def distance(p1, p2):
+    return math.hypot(p1[0] - p2[0], p1[1] - p2[1])
+
+================================================================================
+SUMMARY: 19 Python files extracted
+================================================================================

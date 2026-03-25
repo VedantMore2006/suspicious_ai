@@ -33,12 +33,15 @@ SAVE_FRAMES = False
 SAVE_CONFIDENCE = 0.5
 MOVEMENT_THRESHOLD = 30  # pixels
 
+MODEL_PATH = "yolov8n.onnx"  # export_model.py generates this; fallback: "yolov8n.pt"
+
 CONFIDENCE = 0.2
 IOU_THRESHOLD = 0.5
-IMG_SIZE = 416
-# IMG_SIZE = 640
-# IMG_SIZE = 256
-# IMG_SIZE = 320
+IMG_SIZE = 320  # reduced from 416 for CPU performance (~40% faster inference)
+
+# Frame skipping: run full detection every N frames; intermediate frames reuse last result.
+# N=1 = no skipping. N=2 roughly doubles display FPS on CPU (10 FPS detect → ~17 FPS display).
+DETECT_EVERY_N = 2
 
 # Classes (COCO indices)
 PERSON = 0
@@ -72,7 +75,6 @@ ENABLE_PHONE_BEHAVIOR = False
 
 SUSPICION_THRESHOLD = 3
 
-ENABLE_BEEP = True
 ENABLE_CONSOLE_LOG = True
 ALERT_COOLDOWN = 5  # seconds between repeated alerts
 

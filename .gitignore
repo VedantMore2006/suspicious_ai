@@ -1,5 +1,5 @@
 # Python bytecode
-/home/vedant/Facial_analysis/src/__pycache__/*
+/home/vedant/suspicious_ai/src/__pycache__/*
 *.py[cod]
 *$py.class
 *.pyc

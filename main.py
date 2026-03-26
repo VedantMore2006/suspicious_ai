@@ -12,7 +12,7 @@ from config import (CAMERA_SOURCE, SHOW_FPS, SAVE_CONFIDENCE, MOVEMENT_THRESHOLD
                     DISPLAY_SCALE, BOX_THICKNESS, FONT_SCALE, FONT_THICKNESS,
                     FRAME_WIDTH, FRAME_HEIGHT)
 from utils.fps_tracker import FPSTracker
-from utils.drawing import setup_window
+from utils.drawing import setup_window, draw_keypoints
 from utils.event_logger import EventLogger
 from utils.audio import AudioManager
 from behavior.loitering import LoiteringDetector
@@ -43,27 +43,13 @@ def inference_worker(cap, detector, loiter_detector, abandon_detector,
 
         frame = cv2.resize(frame, (FRAME_WIDTH, FRAME_HEIGHT))
 
+        # Video timestamp — used by conflict detector for accurate velocity dt
+        # regardless of how fast/slow we process frames
+        video_timestamp = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
+
         if frame_count % config.DETECT_EVERY_N == 0:
             results = detector.detect(frame)
-            boxes = results.boxes
-            tracked_objects = []
-
-            if boxes.id is not None:
-                ids = boxes.id.cpu().numpy().astype(int)
-                xyxy = boxes.xyxy.cpu().numpy()
-                classes = boxes.cls.cpu().numpy().astype(int)
-                confidences = boxes.conf.cpu().numpy()
-
-                for i in range(len(ids)):
-                    x1, y1, x2, y2 = xyxy[i]
-                    tracked_objects.append({
-                        "id": ids[i],
-                        "class": classes[i],
-                        "bbox": (x1, y1, x2, y2),
-                        "conf": float(confidences[i]),
-                        "name": results.names[classes[i]],
-                    })
-
+            tracked_objects = detector.parse_tracked_objects(results)
             last_tracked_objects = tracked_objects
         else:
             tracked_objects = last_tracked_objects
@@ -72,22 +58,22 @@ def inference_worker(cap, detector, loiter_detector, abandon_detector,
 
         suspicious_ids = loiter_detector.update(tracked_objects)
         suspicious_bags = abandon_detector.update(tracked_objects)
-        conflict_alert = conflict_detector.update(tracked_objects)
+        conflict_alert = conflict_detector.update(tracked_objects, video_timestamp)
         instant_scores, session_scores = scorer.update(
             tracked_objects, suspicious_ids, suspicious_bags, conflict_alert
         )
 
         result = {
-            "frame": frame,
+            "frame":           frame,
             "tracked_objects": tracked_objects,
-            "suspicious_ids": suspicious_ids,
+            "suspicious_ids":  suspicious_ids,
             "suspicious_bags": suspicious_bags,
-            "conflict_alert": conflict_alert,
-            "instant_scores": instant_scores,
-            "session_scores": session_scores,
+            "conflict_alert":  conflict_alert,
+            "instant_scores":  instant_scores,
+            "session_scores":  session_scores,
         }
 
-        # Drop stale result if display hasn't consumed it yet; always keep freshest
+        # Drop stale result — display always gets the freshest frame
         try:
             result_queue.get_nowait()
         except queue.Empty:
@@ -204,6 +190,11 @@ def main():
             cv2.rectangle(frame_copy, (int(x1), int(y1)), (int(x2), int(y2)), color, BOX_THICKNESS)
             cv2.putText(frame_copy, label, (int(x1), int(y1) - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, FONT_SCALE, color, FONT_THICKNESS)
+
+            # Skeleton + strike-zone overlay
+            if config.SHOW_KEYPOINTS and cls == config.PERSON:
+                persons_in_frame = [o for o in tracked_objects if o["class"] == config.PERSON]
+                draw_keypoints(frame_copy, obj, all_persons=persons_in_frame)
 
             if config.SAVE_FRAMES and conf > SAVE_CONFIDENCE:
                 center_x = (x1 + x2) / 2

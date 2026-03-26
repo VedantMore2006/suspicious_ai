@@ -1,7 +1,7 @@
 # config.py
 
 # Camera configuration
-CAMERA_SOURCE = 0
+CAMERA_SOURCE = "/home/vedant/suspicious_ai/assets/test.mp4"
 SHOW_FPS = True
 
 FRAME_WIDTH = 640
@@ -33,7 +33,9 @@ SAVE_FRAMES = False
 SAVE_CONFIDENCE = 0.5
 MOVEMENT_THRESHOLD = 30  # pixels
 
-MODEL_PATH = "yolov8n.onnx"  # export_model.py generates this; fallback: "yolov8n.pt"
+MODEL_PATH = "yolov8n-pose.pt"  # pose model — gives keypoints for accurate conflict detection
+                                 # export with: YOLO("yolov8n-pose.pt").export(format="onnx", imgsz=320)
+                                 # then switch to "yolov8n-pose.onnx" for faster CPU inference
 
 CONFIDENCE = 0.2
 IOU_THRESHOLD = 0.5
@@ -48,9 +50,9 @@ PERSON = 0
 BACKPACK = 24
 HANDBAG = 26
 #SUITCASE = 28
-CELL_PHONE = 67
+#CELL_PHONE = 67
 
-DETECTION_CLASSES = [PERSON, BACKPACK, HANDBAG, CELL_PHONE]
+DETECTION_CLASSES = [PERSON, BACKPACK, HANDBAG]
 
 # Behavior thresholds
 LOITER_TIME = 3
@@ -98,5 +100,21 @@ ENABLE_CONFLICT_DETECTION = True
 PROXIMITY_DISTANCE = 200  # pixels
 DISTANCE_VELOCITY_THRESHOLD = 40  # pixels/second
 ACCELERATION_THRESHOLD = 40
-AREA_CHANGE_THRESHOLD = 0.20  # 25%
-CONFLICT_CONFIRM_FRAMES = 2
+AREA_CHANGE_THRESHOLD = 0.20
+
+# Conflict confirmation — require sustained signal, not just N frames
+CONFLICT_CONFIRM_FRAMES = 8      # consecutive frames with raw signal before confirming
+CONFLICT_MIN_DURATION = 1.5      # seconds of sustained signal required (prevents flash false positives)
+CONFLICT_CALM_FRAMES = 5         # calm frames before resetting the confirm counter
+
+# Calm contact suppression — handshake/hug: close together + low velocity sustained
+CALM_VELOCITY_THRESHOLD = 15     # px/s — below this while close = social contact, not conflict
+CALM_CONTACT_TIME = 1.5          # seconds of calm proximity → suppress conflict for this pair
+
+# Keypoint-based conflict analysis (pose model only)
+KP_CONF_MIN = 0.3        # minimum keypoint confidence to use a point
+STRIKE_DISTANCE = 80     # px — wrist within this distance of opponent nose → strike zone
+HIP_TOLERANCE = 60       # px — wrist within this of own hip height → handshake-like pose
+
+# Keypoint visualisation
+SHOW_KEYPOINTS = True    # draw skeleton + strike-zone overlay (useful for tuning, disable in prod)

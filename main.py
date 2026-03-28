@@ -10,7 +10,7 @@ from detection.detector import Detector
 from config import (CAMERA_SOURCE, SHOW_FPS, SAVE_CONFIDENCE, MOVEMENT_THRESHOLD,
                     WINDOW_NAME, WINDOW_MODE, WINDOW_WIDTH, WINDOW_HEIGHT,
                     DISPLAY_SCALE, BOX_THICKNESS, FONT_SCALE, FONT_THICKNESS,
-                    FRAME_WIDTH, FRAME_HEIGHT)
+                    FRAME_WIDTH, FRAME_HEIGHT, SEEK_STEP_SECONDS)
 from utils.fps_tracker import FPSTracker
 from utils.drawing import setup_window, draw_keypoints
 from utils.event_logger import EventLogger
@@ -24,8 +24,23 @@ import config
 os.environ["QT_QPA_PLATFORM"] = "xcb"
 
 
+def _reset_temporal_state(loiter_detector, abandon_detector, conflict_detector, scorer):
+    """Clear time/history-dependent detector state after a seek jump."""
+    if hasattr(loiter_detector, "person_state"):
+        loiter_detector.person_state.clear()
+    if hasattr(abandon_detector, "bag_state"):
+        abandon_detector.bag_state.clear()
+    if hasattr(conflict_detector, "history"):
+        conflict_detector.history.clear()
+    if hasattr(conflict_detector, "person_kp"):
+        conflict_detector.person_kp.clear()
+    if hasattr(scorer, "instant_scores"):
+        scorer.instant_scores.clear()
+
+
 def inference_worker(cap, detector, loiter_detector, abandon_detector,
-                     conflict_detector, scorer, result_queue, stop_event):
+                     conflict_detector, scorer, result_queue, control_queue,
+                     stop_event):
     """
     Runs in a background thread.
     Captures frames, runs detection every DETECT_EVERY_N frames (reuses last
@@ -37,6 +52,45 @@ def inference_worker(cap, detector, loiter_detector, abandon_detector,
     last_tracked_objects = []
 
     while not stop_event.is_set():
+        seek_applied = False
+
+        # Apply queued controls before reading next frame.
+        while True:
+            try:
+                command = control_queue.get_nowait()
+            except queue.Empty:
+                break
+
+            if command.get("type") != "seek":
+                continue
+
+            seek_seconds = float(command.get("seconds", 0.0))
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            if fps <= 0:
+                fps = 30.0
+
+            current_frame = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            target_frame = current_frame + int(seek_seconds * fps)
+
+            if total_frames > 0:
+                target_frame = max(0, min(target_frame, total_frames - 1))
+            else:
+                target_frame = max(0, target_frame)
+
+            cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+            frame_count = target_frame
+            last_tracked_objects = []
+            _reset_temporal_state(loiter_detector, abandon_detector, conflict_detector, scorer)
+            seek_applied = True
+
+            # Flush display queue so stale pre-seek frames are dropped.
+            while True:
+                try:
+                    result_queue.get_nowait()
+                except queue.Empty:
+                    break
+
         ret, frame = cap.read()
         if not ret:
             break
@@ -58,9 +112,9 @@ def inference_worker(cap, detector, loiter_detector, abandon_detector,
 
         suspicious_ids = loiter_detector.update(tracked_objects)
         suspicious_bags = abandon_detector.update(tracked_objects)
-        conflict_alert = conflict_detector.update(tracked_objects, video_timestamp)
+        conflict_alert, pair_scores = conflict_detector.update(tracked_objects, video_timestamp)
         instant_scores, session_scores = scorer.update(
-            tracked_objects, suspicious_ids, suspicious_bags, conflict_alert
+            tracked_objects, suspicious_ids, suspicious_bags, conflict_alert, pair_scores
         )
 
         result = {
@@ -71,6 +125,7 @@ def inference_worker(cap, detector, loiter_detector, abandon_detector,
             "conflict_alert":  conflict_alert,
             "instant_scores":  instant_scores,
             "session_scores":  session_scores,
+            "seek_applied":    seek_applied,
         }
 
         # Drop stale result — display always gets the freshest frame
@@ -108,17 +163,20 @@ def main():
     prev_time = time.time()
 
     result_queue = queue.Queue(maxsize=1)
+    control_queue = queue.Queue(maxsize=8)
     stop_event = threading.Event()
 
     worker = threading.Thread(
         target=inference_worker,
         args=(cap, detector, loiter_detector, abandon_detector,
-              conflict_detector, scorer, result_queue, stop_event),
+              conflict_detector, scorer, result_queue, control_queue, stop_event),
         daemon=True,
     )
     worker.start()
 
     last_result = None
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    video_seek_enabled = total_frames > 0
 
     while True:
         try:
@@ -135,9 +193,17 @@ def main():
         conflict_alert = result["conflict_alert"]
         instant_scores = result["instant_scores"]
         session_scores = result["session_scores"]
+        seek_applied = result.get("seek_applied", False)
 
         frame_copy = frame.copy()
         current_time = time.time()
+
+        if seek_applied:
+            object_positions.clear()
+            last_save_time.clear()
+            active_alert = None
+            current_alert_state = "NONE"
+            audio_manager.stop_alarm()
 
         # Alert state machine
         new_alert_state = "NONE"
@@ -295,14 +361,42 @@ def main():
                             cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
                 y_offset += 20
 
+        controls_text = "Controls: q Quit"
+        if video_seek_enabled:
+            controls_text += f" | a/<- Back {SEEK_STEP_SECONDS}s | d/-> Forward {SEEK_STEP_SECONDS}s"
+        cv2.putText(extended_frame, controls_text, (15, h - 15),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 180), 1)
+
         display_frame = extended_frame
         if DISPLAY_SCALE != 1.0:
             display_frame = cv2.resize(extended_frame, None, fx=DISPLAY_SCALE, fy=DISPLAY_SCALE)
 
         cv2.imshow(WINDOW_NAME, display_frame)
 
-        if cv2.waitKey(1) & 0xFF == ord('q'):
+        key = cv2.waitKeyEx(1)
+        key_ascii = key & 0xFF
+
+        if key_ascii == ord('q'):
             break
+
+        if video_seek_enabled:
+            seek_seconds = None
+
+            if key_ascii == ord('a') or key in (81, 2424832):  # left arrow
+                seek_seconds = -SEEK_STEP_SECONDS
+            elif key_ascii == ord('d') or key in (83, 2555904):  # right arrow
+                seek_seconds = SEEK_STEP_SECONDS
+
+            if seek_seconds is not None:
+                try:
+                    control_queue.put_nowait({"type": "seek", "seconds": seek_seconds})
+                except queue.Full:
+                    # Keep only the freshest seek command.
+                    try:
+                        control_queue.get_nowait()
+                    except queue.Empty:
+                        pass
+                    control_queue.put_nowait({"type": "seek", "seconds": seek_seconds})
 
     stop_event.set()
     worker.join(timeout=2)

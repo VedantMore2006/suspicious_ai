@@ -1,0 +1,230 @@
+RTMPose (COCO) gives 17 points, but not all are equally useful for your goal. I’ll split this cleanly:
+
+🧍 Full 17 Keypoints (COCO Standard)
+4
+Head (5)
+Nose
+Left Eye
+Right Eye
+Left Ear
+Right Ear
+Upper Body (6)
+Left Shoulder
+Right Shoulder
+Left Elbow
+Right Elbow
+Left Wrist
+Right Wrist
+Lower Body (6)
+Left Hip
+Right Hip
+Left Knee
+Right Knee
+Left Ankle
+Right Ankle
+
+🧠 Core setup (assume this always exists)
+
+You’re tracking two people: A and B
+
+Define once:
+
+# distances
+d(A_wrist, B_head)
+d(A_wrist, B_torso)
+d(A_ankle, B_hip)
+
+# velocities
+v(A_wrist), v(A_ankle), v(A_hip)
+
+# angles
+angle(A_elbow), angle(A_knee)
+
+# orientation
+vec(A_shoulders), vec(A_hips)
+
+# meta
+inter_person_distance
+
+Everything below is built on this.
+
+⚔️ 1. PUNCH / STRIKE DETECTION
+🎯 Straight punch (random street version included)
+Signal pattern:
+v(A_wrist) ↑↑ (spike)
+angle(A_elbow) → extend (~160–180°)
+d(A_wrist, B_head or B_upper_body) ↓ rapidly
+shoulder rotation ↑
+Extra street-fight realism:
+trajectory NOT clean (no perfect straight line)
+multiple rapid spikes (flurry)
+Robust condition:
+if v(wrist) > T1 
+and elbow_extension > T2 
+and d(wrist, opponent_upper) < T3:
+    event = "strike_attempt"
+🔁 Wild swinging (non-trained punches)
+Signal:
+v(wrist) high
+trajectory = curved / inconsistent
+shoulder movement exaggerated
+balance unstable (hip jitter ↑)
+
+👉 Key difference from normal motion:
+
+repeated chaotic bursts
+🛡️ 2. GUARD / DEFENSIVE POSTURE
+Signal:
+d(wrist, own_face) ↓
+elbows tucked (angle ↓)
+symmetry between hands ↑
+movement minimal but reactive
+Add reaction:
+if opponent_wrist_velocity ↑:
+    own_head displacement ↑
+
+👉 That’s defensive flinch response
+
+🤼 3. GRABBING / HOLDING
+🎯 Wrist-to-body grab
+Signal:
+d(A_wrist, B_torso) ↓↓↓ (sustained, not spike)
+v(A_wrist) ↓ after contact
+both persons' hip velocities correlate ↑
+
+👉 Important:
+
+NOT a spike → a hold
+🎯 Collar / neck grab
+Signal:
+d(A_wrist, B_head/neck) ↓
+wrist stays near head
+B_head displacement controlled by A
+🎯 Two-hand pushing hold
+Signal:
+both wrists near opponent torso
+arms semi-extended
+forward force from hips
+🫷 4. PUSHING
+Signal:
+both wrists move toward opponent torso
+v(A_hip) forward ↑
+B_hip displacement backward ↑
+arms extend but slower than punch
+Key difference from punch:
+lower velocity
+longer contact duration
+🦵 5. KICKING (REALISTIC, NOT MMA CLEAN)
+🎯 Random street kick
+Signal:
+v(A_ankle) ↑↑
+knee extension ↑
+foot height ↑
+trajectory inconsistent
+balance unstable (hip wobble ↑)
+Contact zone:
+d(A_ankle, B_lower_body or torso) ↓
+
+👉 Street kicks:
+
+often low (legs, hips)
+messy trajectory
+followed by imbalance
+🎯 Push kick (like “get away”)
+Signal:
+leg extends forward
+v moderate (not explosive)
+contact sustained briefly
+B moves backward
+🧨 6. CLOSE-RANGE CHAOTIC FIGHT (MOST IMPORTANT)
+
+This is what real fights mostly look like.
+
+Signal cluster:
+inter_person_distance ↓↓↓
+multiple wrist velocity spikes (both A & B)
+hip movement chaotic
+symmetry ↓
+temporal overlap of actions ↑
+
+👉 Translation:
+
+both attacking + reacting simultaneously
+🧍 7. AGGRESSIVE ADVANCE
+Signal:
+A_hip velocity → toward B
+shoulders oriented toward B
+step frequency ↑
+inter_person_distance ↓
+🏃 8. RETREAT / DEFENSIVE MOVEMENT
+Signal:
+hip velocity away from opponent
+head leaning backward
+feet stepping back rapidly
+🧠 9. INTIMIDATION (PRE-CONTACT)
+Signal:
+inter_person_distance low
+no strike yet
+shoulders squared
+head facing opponent
+low but tense movement
+💥 10. FALL / LOSS OF BALANCE
+Signal:
+hip height ↓ suddenly
+ankle positions unstable
+center of mass shifts outside base
+🔁 TEMPORAL LAYER (THIS IS WHERE YOUR MODEL WINS)
+
+Single frame = useless
+Sequence = gold
+
+Detect patterns like:
+[strike → reaction → counter-strike]
+[push → stumble → regain balance]
+[grab → pull → resist]
+🧪 FINAL FEATURE GROUPING
+🟢 Attack signals
+wrist velocity spikes
+ankle velocity spikes
+elbow/knee extension
+🟡 Interaction signals
+wrist-to-opponent distance
+ankle-to-opponent distance
+inter-person distance
+🔵 Control signals
+sustained proximity (grab)
+synchronized movement (grapple)
+🔴 Chaos signals
+acceleration variance
+asymmetry
+overlapping actions
+⚠️ Brutal truth (don’t ignore this)
+
+If you ONLY detect:
+
+“wrist near opponent”
+
+You will fail.
+
+Because:
+
+handshake
+helping someone
+sports
+dancing
+
+👉 You NEED:
+
+velocity + proximity + intent over time
+🧭 Clean decision logic (simplified)
+if high_velocity_contact and repeated:
+    → fight likely
+
+elif sustained_contact and control:
+    → grab / restraint
+
+elif low_velocity + forward force:
+    → push
+
+elif high ankle velocity + contact:
+    → kick

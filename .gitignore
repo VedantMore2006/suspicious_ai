@@ -41,7 +41,7 @@ logs/
 # OS files
 .DS_Store
 Thumbs.db
-
+to_beat_copycats.md
 # IDE / editor
 .vscode/
 .idea/

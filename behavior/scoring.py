@@ -6,8 +6,16 @@ class ThreatScorer:
         self.instant_scores = {}
         self.session_scores = {}
 
-    def update(self, tracked_objects, loiter_ids, abandoned_bags, conflict_flag):
+    def update(self, tracked_objects, loiter_ids, abandoned_bags, conflict_flag, pair_scores=None):
         persons = [o for o in tracked_objects if o["class"] == config.PERSON]
+        pair_scores = pair_scores or {}
+
+        # Build per-person fight score from pair_scores:
+        # a person's fight contribution = max fight_session across all pairs they appear in
+        person_fight_score = {}
+        for (idA, idB), fscore in pair_scores.items():
+            person_fight_score[idA] = max(person_fight_score.get(idA, 0.0), fscore)
+            person_fight_score[idB] = max(person_fight_score.get(idB, 0.0), fscore)
 
         current_ids = set()
 
@@ -23,6 +31,12 @@ class ThreatScorer:
             if conflict_flag:
                 score += 4
 
+            # Per-pair fight session contributes a scaled bonus (capped at +3)
+            # This rewards sustained aggression without double-counting the conflict flag
+            fscore = person_fight_score.get(pid, 0.0)
+            if fscore > 0:
+                score += min(int(fscore / 5), 3)
+
             if abandoned_bags:
                 score += 2
 
@@ -31,7 +45,6 @@ class ThreatScorer:
             if pid not in self.session_scores:
                 self.session_scores[pid] = 0
 
-            # Only add if non-zero event
             if score > 0:
                 self.session_scores[pid] += score
 

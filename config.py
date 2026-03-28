@@ -23,6 +23,9 @@ WINDOW_HEIGHT = 800
 # Scale factor applied ONLY to display (not detection)
 DISPLAY_SCALE = 1.6  # 1.0 = original, 1.5 = 150%, etc.
 
+# Video control step for seeking in playback mode.
+SEEK_STEP_SECONDS = 5
+
 # Drawing appearance
 BOX_THICKNESS = 2
 FONT_SCALE = 0.7
@@ -103,7 +106,7 @@ ACCELERATION_THRESHOLD = 40
 AREA_CHANGE_THRESHOLD = 0.20
 
 # Conflict confirmation — require sustained signal, not just N frames
-CONFLICT_CONFIRM_FRAMES = 8      # consecutive frames with raw signal before confirming
+CONFLICT_CONFIRM_FRAMES = 5      # consecutive frames with raw signal before confirming
 CONFLICT_MIN_DURATION = 1.5      # seconds of sustained signal required (prevents flash false positives)
 CONFLICT_CALM_FRAMES = 5         # calm frames before resetting the confirm counter
 
@@ -114,7 +117,11 @@ CALM_CONTACT_TIME = 1.5          # seconds of calm proximity → suppress confli
 # Keypoint-based conflict analysis (pose model only)
 KP_CONF_MIN = 0.3        # minimum keypoint confidence to use a point
 STRIKE_DISTANCE = 80     # px — wrist within this distance of opponent nose → strike zone
-HIP_TOLERANCE = 60       # px — wrist within this of own hip height → handshake-like pose
+HIP_TOLERANCE = 70       # px — wrist within this of own hip height → handshake-like pose
+
+# Relative wrist velocity threshold (pixels/second, body-motion corrected)
+# A wrist moving faster than this relative to the person's own hips → strike signal
+RELATIVE_WRIST_VEL_THRESHOLD = 60   # px/s — lower = more sensitive, raise if too many false positives
 
 # Keypoint visualisation
 SHOW_KEYPOINTS = True    # draw skeleton + strike-zone overlay (useful for tuning, disable in prod)

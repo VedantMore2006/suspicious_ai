@@ -78,65 +78,79 @@ def _pose_signals(personA, personB, rel_wrist_vel_A=None, rel_wrist_vel_B=None):
     suppress       = False
     fight_score    = 0.0
 
+    # debug_signals: per-person event labels for the drawing layer.
+    # Format: (person_ref, label_string) so drawing.py can attach to correct person.
+    signals_A = []
+    signals_B = []
+
     # ── Conflict signal 1: wrist of A near nose of B (strike zone) ──
     if nose_B and wrists_A:
-        for w in wrists_A:
-            if math.hypot(w[0] - nose_B[0], w[1] - nose_B[1]) < config.STRIKE_DISTANCE:
+        for w_idx, w in zip([_L_WRIST, _R_WRIST], [wL_A, wR_A]):
+            if w and math.hypot(w[0] - nose_B[0], w[1] - nose_B[1]) < config.STRIKE_DISTANCE:
                 conflict_boost = True
                 fight_score += 3.0
+                signals_A.append(f"KP{w_idx}→nose[B]: STRIKE ZONE")
 
     # ── Conflict signal 1 (reciprocal): wrist of B near nose of A ──
     if nose_A and wrists_B:
-        for w in wrists_B:
-            if math.hypot(w[0] - nose_A[0], w[1] - nose_A[1]) < config.STRIKE_DISTANCE:
+        for w_idx, w in zip([_L_WRIST, _R_WRIST], [wL_B, wR_B]):
+            if w and math.hypot(w[0] - nose_A[0], w[1] - nose_A[1]) < config.STRIKE_DISTANCE:
                 conflict_boost = True
                 fight_score += 3.0
+                signals_B.append(f"KP{w_idx}→nose[A]: STRIKE ZONE")
 
     # ── Conflict signal 2: wrist raised well above own shoulder ──
     if shoulders_A and wrists_A:
         avg_sh_y = sum(s[1] for s in shoulders_A) / len(shoulders_A)
-        if any(w[1] < avg_sh_y - 20 for w in wrists_A):
-            conflict_boost = True
-            fight_score += 1.5
+        for w_idx, w in zip([_L_WRIST, _R_WRIST], [wL_A, wR_A]):
+            if w and w[1] < avg_sh_y - 20:
+                conflict_boost = True
+                fight_score += 1.5
+                signals_A.append(f"KP{w_idx}<KP5/6: ARM RAISED")
 
     if shoulders_B and wrists_B:
         avg_sh_y = sum(s[1] for s in shoulders_B) / len(shoulders_B)
-        if any(w[1] < avg_sh_y - 20 for w in wrists_B):
-            conflict_boost = True
-            fight_score += 1.5
+        for w_idx, w in zip([_L_WRIST, _R_WRIST], [wL_B, wR_B]):
+            if w and w[1] < avg_sh_y - 20:
+                conflict_boost = True
+                fight_score += 1.5
+                signals_B.append(f"KP{w_idx}<KP5/6: ARM RAISED")
 
     # ── Conflict signal 3: high relative wrist velocity (body-motion corrected) ──
-    # Uses smoothed relative velocity to avoid false spikes from walking/running
     rel_vel_thresh = config.RELATIVE_WRIST_VEL_THRESHOLD
     if rel_wrist_vel_A is not None and rel_wrist_vel_A > rel_vel_thresh:
-        fight_score += min(rel_wrist_vel_A / rel_vel_thresh, 2.0)  # cap contribution
+        fight_score += min(rel_wrist_vel_A / rel_vel_thresh, 2.0)
         if rel_wrist_vel_A > rel_vel_thresh * 1.5:
             conflict_boost = True
+        signals_A.append(f"KP9/10 rel-vel: {rel_wrist_vel_A:.0f}px/s")
     if rel_wrist_vel_B is not None and rel_wrist_vel_B > rel_vel_thresh:
         fight_score += min(rel_wrist_vel_B / rel_vel_thresh, 2.0)
         if rel_wrist_vel_B > rel_vel_thresh * 1.5:
             conflict_boost = True
+        signals_B.append(f"KP9/10 rel-vel: {rel_wrist_vel_B:.0f}px/s")
 
     # ── Friendly signal: handshake — wrists near own hip level ──
     if hips_A and wrists_A:
         avg_hip_y = sum(h[1] for h in hips_A) / len(hips_A)
         if all(abs(w[1] - avg_hip_y) < config.HIP_TOLERANCE for w in wrists_A):
             suppress = True
+            signals_A.append("KP9/10≈KP11/12: HANDSHAKE SUPPRESS")
 
     if hips_B and wrists_B:
         avg_hip_y = sum(h[1] for h in hips_B) / len(hips_B)
         if all(abs(w[1] - avg_hip_y) < config.HIP_TOLERANCE for w in wrists_B):
             suppress = True
+            signals_B.append("KP9/10≈KP11/12: HANDSHAKE SUPPRESS")
 
     # A conflict boost always overrides a suppress signal
     if conflict_boost:
         suppress = False
-        fight_score = max(fight_score, 2.0)  # floor when boost is active
+        fight_score = max(fight_score, 2.0)
 
     if suppress:
         fight_score = 0.0
 
-    return conflict_boost, suppress, fight_score
+    return conflict_boost, suppress, fight_score, signals_A, signals_B
 
 
 class ConflictDetector:
@@ -266,8 +280,10 @@ class ConflictDetector:
         for p in persons:
             sk, sc, rv = self._smooth_person(
                 p["id"], p.get("keypoints"), p.get("kp_conf"), current_time)
-            p["_smooth_kp"]   = sk
-            p["_smooth_conf"] = sc
+            p["_smooth_kp"]      = sk
+            p["_smooth_conf"]    = sc
+            p["_rel_wrist_vel"]  = rv if rv is not None else 0.0
+            p["_signals"]        = []   # reset signal list each frame
             rel_wrist_vels[p["id"]] = rv
 
         any_confirmed  = False
@@ -321,11 +337,16 @@ class ConflictDetector:
                 area_changeB = abs(areaB - prev["prev_areaB"]) / (prev["prev_areaB"] + 1e-5)
 
                 # ── Pose-based signals (using smoothed keypoints + relative velocity) ──
-                conflict_boost, pose_suppress, fight_score = _pose_signals(
+                conflict_boost, pose_suppress, fight_score, sig_A, sig_B = _pose_signals(
                     persons[i], persons[j],
                     rel_wrist_vel_A=rel_wrist_vels.get(idA),
                     rel_wrist_vel_B=rel_wrist_vels.get(idB),
                 )
+                # Write signal labels back into person dicts for drawing layer
+                persons[i].setdefault("_signals", [])
+                persons[j].setdefault("_signals", [])
+                persons[i]["_signals"].extend(sig_A)
+                persons[j]["_signals"].extend(sig_B)
 
                 # ── Raw bbox conflict signal ──
                 bbox_conflict = (

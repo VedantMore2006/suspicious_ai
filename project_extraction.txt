@@ -6,15 +6,21 @@ PROJECT STRUCTURE:
 --------------------------------------------------------------------------------
 
 suspicious_ai/
+├── PROJECT_OVERVIEW.md
 ├── README.md
 ├── config.py
+├── export_model.py
 ├── extract_project.py
 ├── main.py
+├── plan.txt
 ├── project_extraction.txt
 ├── requirements.txt
+├── yolov8n-pose.pt
+├── yolov8n.onnx
 ├── yolov8n.pt
 ├── assets/
-│   └── alert.mp3
+│   ├── alert.mp3
+│   └── test.mp4
 ├── behavior/
 │   ├── __init__.py
 │   ├── abandoned_object.py
@@ -23,71 +29,10 @@ suspicious_ai/
 │   ├── phone_behavior.py
 │   ├── phone_usage.py
 │   └── scoring.py
-├── data/
 ├── detection/
 │   ├── __init__.py
 │   └── detector.py
 ├── saves/
-│   ├── detected_person_20260315_212923_817820.jpg
-│   ├── detected_person_20260315_212924_826479.jpg
-│   ├── detected_person_20260315_212925_834245.jpg
-│   ├── detected_person_20260315_212926_853122.jpg
-│   ├── detected_person_20260315_212927_898273.jpg
-│   ├── detected_person_20260315_212928_938017.jpg
-│   ├── detected_person_20260315_212929_986536.jpg
-│   ├── detected_person_20260315_212931_052643.jpg
-│   ├── detected_person_20260315_212932_128769.jpg
-│   ├── detected_person_20260315_212933_166716.jpg
-│   ├── detected_person_20260315_212934_200548.jpg
-│   ├── detected_person_20260315_212935_252945.jpg
-│   ├── detected_person_20260315_212936_340305.jpg
-│   ├── detected_person_20260315_212937_379840.jpg
-│   ├── detected_person_20260315_213110_433269.jpg
-│   ├── detected_person_20260315_213111_481434.jpg
-│   ├── detected_person_20260315_213112_502264.jpg
-│   ├── detected_person_20260315_213113_540811.jpg
-│   ├── detected_person_20260315_213114_609115.jpg
-│   ├── detected_person_20260315_213115_625908.jpg
-│   ├── detected_person_20260315_213116_674771.jpg
-│   ├── detected_person_20260315_213117_684348.jpg
-│   ├── detected_person_20260315_213118_742087.jpg
-│   ├── detected_person_20260315_213119_751097.jpg
-│   ├── detected_person_20260315_213120_755323.jpg
-│   ├── detected_person_20260315_213121_789900.jpg
-│   ├── detected_person_20260315_213122_870204.jpg
-│   ├── detected_person_20260315_213123_899039.jpg
-│   ├── detected_person_20260315_213124_936762.jpg
-│   ├── detected_person_20260315_213125_945269.jpg
-│   ├── detected_person_20260315_213126_990388.jpg
-│   ├── detected_person_20260315_213128_030748.jpg
-│   ├── detected_person_20260315_213129_035805.jpg
-│   ├── detected_person_20260315_213130_040710.jpg
-│   ├── detected_person_20260315_213131_150085.jpg
-│   ├── detected_person_20260315_213132_184814.jpg
-│   ├── detected_person_20260315_213132_369294.jpg
-│   ├── detected_person_20260315_213133_456876.jpg
-│   ├── detected_person_20260315_213134_537178.jpg
-│   ├── detected_person_20260315_213135_623057.jpg
-│   ├── detected_person_20260315_213136_645308.jpg
-│   ├── detected_person_20260315_213137_705243.jpg
-│   ├── detected_person_20260315_213138_721172.jpg
-│   ├── detected_person_20260315_213139_848041.jpg
-│   ├── detected_person_20260315_213140_989359.jpg
-│   ├── detected_person_20260315_213142_087053.jpg
-│   ├── detected_person_20260315_213143_214869.jpg
-│   ├── detected_person_20260315_213144_235979.jpg
-│   ├── detected_person_20260315_213526_877805.jpg
-│   ├── detected_person_20260315_213527_948346.jpg
-│   ├── detected_person_20260315_213528_978126.jpg
-│   ├── detected_person_20260315_213530_056380.jpg
-│   ├── detected_person_20260315_213531_143842.jpg
-│   ├── detected_person_20260315_213532_204156.jpg
-│   ├── detected_person_20260315_213533_252500.jpg
-│   ├── detected_person_20260315_213534_291821.jpg
-│   ├── detected_person_20260315_213535_362019.jpg
-│   ├── detected_person_20260315_213536_413027.jpg
-│   ├── detected_person_20260315_213537_440590.jpg
-│   ├── detected_person_20260315_213537_553087.jpg
 │   ├── fps_data.csv
 │   └── fps_plot.png
 └── utils/
@@ -195,12 +140,150 @@ FILE: behavior/conflict_detection.py
 import config
 import time
 import math
+import numpy as np
+
+
+# COCO keypoint indices
+_NOSE        = 0
+_L_SHOULDER  = 5
+_R_SHOULDER  = 6
+_L_ELBOW     = 7
+_R_ELBOW     = 8
+_L_WRIST     = 9
+_R_WRIST     = 10
+_L_HIP       = 11
+_R_HIP       = 12
+
+_KP_SMOOTH_ALPHA      = 0.4   # EMA weight for keypoint positions
+_KP_CONF_SMOOTH_ALPHA = 0.35  # EMA weight for keypoint confidences (slightly slower — stability)
+
+
+def _kp(kps, confs, idx):
+    """Return keypoint (x, y) if smoothed confidence is above threshold, else None."""
+    if kps is None or confs is None:
+        return None
+    if confs[idx] >= config.KP_CONF_MIN:
+        return (float(kps[idx][0]), float(kps[idx][1]))
+    return None
+
+
+def _pose_signals(personA, personB, rel_wrist_vel_A=None, rel_wrist_vel_B=None):
+    """
+    Analyse smoothed keypoints for two people and return:
+      conflict_boost (bool) — pose clearly indicates aggression
+      suppress       (bool) — pose clearly indicates friendly contact
+      fight_score    (float) — continuous aggression signal for session scoring
+
+    rel_wrist_vel_A/B: relative wrist speed (wrist vel minus hip vel) for each person.
+    Falls back gracefully when keypoints or relative velocity are unavailable.
+    """
+    kpA, kcA = personA.get("_smooth_kp"), personA.get("_smooth_conf")
+    kpB, kcB = personB.get("_smooth_kp"), personB.get("_smooth_conf")
+
+    # Fall back to raw keypoints if smoothed not yet available
+    if kpA is None:
+        kpA, kcA = personA.get("keypoints"), personA.get("kp_conf")
+    if kpB is None:
+        kpB, kcB = personB.get("keypoints"), personB.get("kp_conf")
+
+    if kpA is None or kpB is None:
+        return False, False, 0.0
+
+    # --- Extract key points for A ---
+    wL_A = _kp(kpA, kcA, _L_WRIST)
+    wR_A = _kp(kpA, kcA, _R_WRIST)
+    sL_A = _kp(kpA, kcA, _L_SHOULDER)
+    sR_A = _kp(kpA, kcA, _R_SHOULDER)
+    hL_A = _kp(kpA, kcA, _L_HIP)
+    hR_A = _kp(kpA, kcA, _R_HIP)
+    wrists_A    = [w for w in [wL_A, wR_A] if w]
+    shoulders_A = [s for s in [sL_A, sR_A] if s]
+    hips_A      = [h for h in [hL_A, hR_A] if h]
+
+    # --- Extract key points for B ---
+    wL_B = _kp(kpB, kcB, _L_WRIST)
+    wR_B = _kp(kpB, kcB, _R_WRIST)
+    sL_B = _kp(kpB, kcB, _L_SHOULDER)
+    sR_B = _kp(kpB, kcB, _R_SHOULDER)
+    hL_B = _kp(kpB, kcB, _L_HIP)
+    hR_B = _kp(kpB, kcB, _R_HIP)
+    nose_B      = _kp(kpB, kcB, _NOSE)
+    nose_A      = _kp(kpA, kcA, _NOSE)
+    wrists_B    = [w for w in [wL_B, wR_B] if w]
+    shoulders_B = [s for s in [sL_B, sR_B] if s]
+    hips_B      = [h for h in [hL_B, hR_B] if h]
+
+    conflict_boost = False
+    suppress       = False
+    fight_score    = 0.0
+
+    # ── Conflict signal 1: wrist of A near nose of B (strike zone) ──
+    if nose_B and wrists_A:
+        for w in wrists_A:
+            if math.hypot(w[0] - nose_B[0], w[1] - nose_B[1]) < config.STRIKE_DISTANCE:
+                conflict_boost = True
+                fight_score += 3.0
+
+    # ── Conflict signal 1 (reciprocal): wrist of B near nose of A ──
+    if nose_A and wrists_B:
+        for w in wrists_B:
+            if math.hypot(w[0] - nose_A[0], w[1] - nose_A[1]) < config.STRIKE_DISTANCE:
+                conflict_boost = True
+                fight_score += 3.0
+
+    # ── Conflict signal 2: wrist raised well above own shoulder ──
+    if shoulders_A and wrists_A:
+        avg_sh_y = sum(s[1] for s in shoulders_A) / len(shoulders_A)
+        if any(w[1] < avg_sh_y - 20 for w in wrists_A):
+            conflict_boost = True
+            fight_score += 1.5
+
+    if shoulders_B and wrists_B:
+        avg_sh_y = sum(s[1] for s in shoulders_B) / len(shoulders_B)
+        if any(w[1] < avg_sh_y - 20 for w in wrists_B):
+            conflict_boost = True
+            fight_score += 1.5
+
+    # ── Conflict signal 3: high relative wrist velocity (body-motion corrected) ──
+    # Uses smoothed relative velocity to avoid false spikes from walking/running
+    rel_vel_thresh = config.RELATIVE_WRIST_VEL_THRESHOLD
+    if rel_wrist_vel_A is not None and rel_wrist_vel_A > rel_vel_thresh:
+        fight_score += min(rel_wrist_vel_A / rel_vel_thresh, 2.0)  # cap contribution
+        if rel_wrist_vel_A > rel_vel_thresh * 1.5:
+            conflict_boost = True
+    if rel_wrist_vel_B is not None and rel_wrist_vel_B > rel_vel_thresh:
+        fight_score += min(rel_wrist_vel_B / rel_vel_thresh, 2.0)
+        if rel_wrist_vel_B > rel_vel_thresh * 1.5:
+            conflict_boost = True
+
+    # ── Friendly signal: handshake — wrists near own hip level ──
+    if hips_A and wrists_A:
+        avg_hip_y = sum(h[1] for h in hips_A) / len(hips_A)
+        if all(abs(w[1] - avg_hip_y) < config.HIP_TOLERANCE for w in wrists_A):
+            suppress = True
+
+    if hips_B and wrists_B:
+        avg_hip_y = sum(h[1] for h in hips_B) / len(hips_B)
+        if all(abs(w[1] - avg_hip_y) < config.HIP_TOLERANCE for w in wrists_B):
+            suppress = True
+
+    # A conflict boost always overrides a suppress signal
+    if conflict_boost:
+        suppress = False
+        fight_score = max(fight_score, 2.0)  # floor when boost is active
+
+    if suppress:
+        fight_score = 0.0
+
+    return conflict_boost, suppress, fight_score
 
 
 class ConflictDetector:
     def __init__(self):
+        # Per-pair state keyed by tuple(sorted((idA, idB)))
         self.history = {}
-        self.confirm_counter = 0
+        # Per-person keypoint smoothing state keyed by person ID
+        self.person_kp = {}
 
     def compute_center(self, bbox):
         x1, y1, x2, y2 = bbox
@@ -210,83 +293,252 @@ class ConflictDetector:
         x1, y1, x2, y2 = bbox
         return (x2 - x1) * (y2 - y1)
 
-    def update(self, tracked_objects):
+    def _smooth_person(self, pid, kp_xy, kp_conf, current_time):
+        """
+        Apply per-keypoint EMA to positions and confidences for a person.
+        Returns (smooth_kp, smooth_conf, rel_wrist_vel) where rel_wrist_vel
+        is the max wrist speed minus hip speed (body-motion corrected).
+        """
+        if kp_xy is None or kp_conf is None:
+            return None, None, None
+
+        if pid not in self.person_kp:
+            # First observation — initialise with raw values
+            self.person_kp[pid] = {
+                "smooth_kp":   kp_xy.copy(),
+                "smooth_conf": kp_conf.copy(),
+                "prev_wrist":  None,   # average wrist position
+                "prev_hip":    None,   # average hip position
+                "prev_time":   current_time,
+                "rel_wrist_vel": 0.0,
+            }
+            return kp_xy, kp_conf, 0.0
+
+        state = self.person_kp[pid]
+        dt = current_time - state["prev_time"]
+
+        # ── EMA on positions (only where current conf is adequate) ──
+        new_smooth_kp   = state["smooth_kp"].copy()
+        new_smooth_conf = state["smooth_conf"].copy()
+
+        for idx in range(17):
+            # Confidence EMA — smooths flickering confidence scores
+            new_smooth_conf[idx] = (
+                _KP_CONF_SMOOTH_ALPHA * kp_conf[idx] +
+                (1 - _KP_CONF_SMOOTH_ALPHA) * state["smooth_conf"][idx]
+            )
+            # Position EMA — only blend when raw detection has decent confidence
+            if kp_conf[idx] >= config.KP_CONF_MIN * 0.7:
+                new_smooth_kp[idx] = (
+                    _KP_SMOOTH_ALPHA * kp_xy[idx] +
+                    (1 - _KP_SMOOTH_ALPHA) * state["smooth_kp"][idx]
+                )
+            # else: keep previous smooth position (occlusion/low-conf frame)
+
+        # ── Relative wrist velocity (wrist speed minus hip speed) ──
+        rel_wrist_vel = state["rel_wrist_vel"]  # carry previous if can't compute
+        if dt > 0:
+            # Average wrist position
+            wrist_indices = [_L_WRIST, _R_WRIST]
+            hip_indices   = [_L_HIP,   _R_HIP]
+
+            valid_wrists = [new_smooth_kp[i] for i in wrist_indices
+                            if new_smooth_conf[i] >= config.KP_CONF_MIN]
+            valid_hips   = [new_smooth_kp[i] for i in hip_indices
+                            if new_smooth_conf[i] >= config.KP_CONF_MIN]
+
+            if valid_wrists and valid_hips and state["prev_wrist"] is not None:
+                curr_wrist = np.mean(valid_wrists, axis=0)
+                curr_hip   = np.mean(valid_hips,   axis=0)
+                prev_wrist = state["prev_wrist"]
+                prev_hip   = state["prev_hip"]
+
+                wrist_speed = math.hypot(*(curr_wrist - prev_wrist)) / dt
+                hip_speed   = math.hypot(*(curr_hip   - prev_hip))   / dt
+
+                # Relative speed: how fast the wrist moves relative to the body
+                raw_rel = max(wrist_speed - hip_speed, 0.0)
+
+                # EMA smooth the relative velocity to prevent 1-frame spikes
+                rel_wrist_vel = (
+                    0.45 * raw_rel +
+                    0.55 * state["rel_wrist_vel"]
+                )
+
+                state["prev_wrist"] = curr_wrist
+                state["prev_hip"]   = curr_hip
+            elif valid_wrists and valid_hips:
+                # First frame with valid wrists and hips — initialise positions
+                state["prev_wrist"] = np.mean(valid_wrists, axis=0)
+                state["prev_hip"]   = np.mean(valid_hips,   axis=0)
+
+        state["smooth_kp"]     = new_smooth_kp
+        state["smooth_conf"]   = new_smooth_conf
+        state["prev_time"]     = current_time
+        state["rel_wrist_vel"] = rel_wrist_vel
+
+        return new_smooth_kp, new_smooth_conf, rel_wrist_vel
+
+    def update(self, tracked_objects, video_timestamp=None):
         if not config.ENABLE_CONFLICT_DETECTION:
-            return False
+            return False, {}
 
         persons = [obj for obj in tracked_objects if obj["class"] == config.PERSON]
-
         if len(persons) < 2:
-            self.confirm_counter = 0
-            return False
+            # Still smooth single-person keypoints so state is ready when a second appears
+            current_time = video_timestamp if video_timestamp is not None else time.time()
+            for p in persons:
+                sk, sc, _ = self._smooth_person(
+                    p["id"], p.get("keypoints"), p.get("kp_conf"), current_time)
+                p["_smooth_kp"]   = sk
+                p["_smooth_conf"] = sc
+            # Clean up person state for IDs no longer tracked
+            active_ids = {p["id"] for p in persons}
+            for k in [k for k in self.person_kp if k not in active_ids]:
+                del self.person_kp[k]
+            return False, {}
 
-        current_time = time.time()
-        conflict = False
+        current_time = video_timestamp if video_timestamp is not None else time.time()
+
+        # ── Smooth keypoints for all persons ──
+        rel_wrist_vels = {}
+        for p in persons:
+            sk, sc, rv = self._smooth_person(
+                p["id"], p.get("keypoints"), p.get("kp_conf"), current_time)
+            p["_smooth_kp"]   = sk
+            p["_smooth_conf"] = sc
+            rel_wrist_vels[p["id"]] = rv
+
+        any_confirmed  = False
+        active_pairs   = set()
+        pair_scores    = {}   # pair_key → cumulative fight score for this update
 
         for i in range(len(persons)):
             for j in range(i + 1, len(persons)):
-
                 idA = persons[i]["id"]
                 idB = persons[j]["id"]
 
                 centerA = self.compute_center(persons[i]["bbox"])
                 centerB = self.compute_center(persons[j]["bbox"])
+                areaA   = self.compute_area(persons[i]["bbox"])
+                areaB   = self.compute_area(persons[j]["bbox"])
 
-                areaA = self.compute_area(persons[i]["bbox"])
-                areaB = self.compute_area(persons[j]["bbox"])
+                dist = math.hypot(centerA[0] - centerB[0], centerA[1] - centerB[1])
 
-                distance = math.hypot(centerA[0] - centerB[0], centerA[1] - centerB[1])
-
-                if distance > config.PROXIMITY_DISTANCE:
+                if dist > config.PROXIMITY_DISTANCE:
                     continue
 
                 pair_key = tuple(sorted((idA, idB)))
+                active_pairs.add(pair_key)
 
+                # ── Initialise per-pair state ──
                 if pair_key not in self.history:
                     self.history[pair_key] = {
-                        "prev_distance": distance,
-                        "prev_velocity": 0,
-                        "prev_areaA": areaA,
-                        "prev_areaB": areaB,
-                        "prev_time": current_time
+                        "prev_distance":  dist,
+                        "prev_velocity":  0.0,
+                        "prev_areaA":     areaA,
+                        "prev_areaB":     areaB,
+                        "prev_time":      current_time,
+                        "confirm_count":  0,
+                        "calm_count":     0,
+                        "conflict_start": None,
+                        "close_since":    current_time,
+                        "calm_contact":   False,
+                        "fight_session":  0.0,   # cumulative fight score for this pair
                     }
                     continue
 
                 prev = self.history[pair_key]
-
                 dt = current_time - prev["prev_time"]
-                if dt == 0:
+                if dt <= 0:
                     continue
 
-                velocity = (distance - prev["prev_distance"]) / dt
+                velocity     = (dist - prev["prev_distance"]) / dt
                 acceleration = (velocity - prev["prev_velocity"]) / dt
 
                 area_changeA = abs(areaA - prev["prev_areaA"]) / (prev["prev_areaA"] + 1e-5)
                 area_changeB = abs(areaB - prev["prev_areaB"]) / (prev["prev_areaB"] + 1e-5)
 
+                # ── Pose-based signals (using smoothed keypoints + relative velocity) ──
+                conflict_boost, pose_suppress, fight_score = _pose_signals(
+                    persons[i], persons[j],
+                    rel_wrist_vel_A=rel_wrist_vels.get(idA),
+                    rel_wrist_vel_B=rel_wrist_vels.get(idB),
+                )
+
+                # ── Raw bbox conflict signal ──
+                bbox_conflict = (
+                    (
+                        abs(velocity)     > config.DISTANCE_VELOCITY_THRESHOLD and
+                        abs(acceleration) > config.ACCELERATION_THRESHOLD
+                    ) or (
+                        area_changeA > config.AREA_CHANGE_THRESHOLD or
+                        area_changeB > config.AREA_CHANGE_THRESHOLD
+                    )
+                )
+
+                raw_conflict = bbox_conflict or conflict_boost
+
+                # ── Calm contact suppression ──
+                time_close = current_time - prev["close_since"]
                 if (
-                    abs(velocity) > config.DISTANCE_VELOCITY_THRESHOLD
-                    and abs(acceleration) > config.ACCELERATION_THRESHOLD
-                ) or (
-                    area_changeA > config.AREA_CHANGE_THRESHOLD
-                    or area_changeB > config.AREA_CHANGE_THRESHOLD
+                    abs(velocity) < config.CALM_VELOCITY_THRESHOLD and
+                    time_close > config.CALM_CONTACT_TIME
                 ):
-                    conflict = True
+                    prev["calm_contact"] = True
 
-                self.history[pair_key] = {
-                    "prev_distance": distance,
-                    "prev_velocity": velocity,
-                    "prev_areaA": areaA,
-                    "prev_areaB": areaB,
-                    "prev_time": current_time
-                }
+                if pose_suppress:
+                    prev["calm_contact"] = True
 
-        if conflict:
-            self.confirm_counter += 1
-        else:
-            self.confirm_counter = 0
+                if conflict_boost or abs(velocity) > config.DISTANCE_VELOCITY_THRESHOLD * 2:
+                    prev["calm_contact"] = False
 
-        return self.confirm_counter >= config.CONFLICT_CONFIRM_FRAMES
+                # ── Per-pair confirmation ──
+                if raw_conflict and not prev["calm_contact"]:
+                    prev["calm_count"] = 0
+                    if prev["confirm_count"] == 0:
+                        prev["conflict_start"] = current_time
+                    prev["confirm_count"] += 1
+                else:
+                    prev["calm_count"] += 1
+                    if prev["calm_count"] >= config.CONFLICT_CALM_FRAMES:
+                        prev["confirm_count"] = 0
+                        prev["conflict_start"] = None
+
+                duration_ok = (
+                    prev["conflict_start"] is not None and
+                    (current_time - prev["conflict_start"]) >= config.CONFLICT_MIN_DURATION
+                )
+                if prev["confirm_count"] >= config.CONFLICT_CONFIRM_FRAMES and duration_ok:
+                    any_confirmed = True
+
+                # ── Per-pair fight session score ──
+                # Accumulates when both persons are in proximity with active signals.
+                # Decays slowly when no conflict signal present.
+                if raw_conflict and not prev["calm_contact"]:
+                    prev["fight_session"] += fight_score * dt
+                else:
+                    prev["fight_session"] = max(0.0, prev["fight_session"] - 0.5 * dt)
+
+                pair_scores[pair_key] = prev["fight_session"]
+
+                # ── Update history ──
+                prev["prev_distance"] = dist
+                prev["prev_velocity"] = velocity
+                prev["prev_areaA"]    = areaA
+                prev["prev_areaB"]    = areaB
+                prev["prev_time"]     = current_time
+
+        # Clean up pairs that left proximity
+        for k in [k for k in self.history if k not in active_pairs]:
+            del self.history[k]
+
+        # Clean up person state for IDs no longer tracked
+        active_person_ids = {p["id"] for p in persons}
+        for k in [k for k in self.person_kp if k not in active_person_ids]:
+            del self.person_kp[k]
+
+        return any_confirmed, pair_scores
 
 
 ================================================================================
@@ -470,8 +722,16 @@ class ThreatScorer:
         self.instant_scores = {}
         self.session_scores = {}
 
-    def update(self, tracked_objects, loiter_ids, abandoned_bags, conflict_flag):
+    def update(self, tracked_objects, loiter_ids, abandoned_bags, conflict_flag, pair_scores=None):
         persons = [o for o in tracked_objects if o["class"] == config.PERSON]
+        pair_scores = pair_scores or {}
+
+        # Build per-person fight score from pair_scores:
+        # a person's fight contribution = max fight_session across all pairs they appear in
+        person_fight_score = {}
+        for (idA, idB), fscore in pair_scores.items():
+            person_fight_score[idA] = max(person_fight_score.get(idA, 0.0), fscore)
+            person_fight_score[idB] = max(person_fight_score.get(idB, 0.0), fscore)
 
         current_ids = set()
 
@@ -487,6 +747,12 @@ class ThreatScorer:
             if conflict_flag:
                 score += 4
 
+            # Per-pair fight session contributes a scaled bonus (capped at +3)
+            # This rewards sustained aggression without double-counting the conflict flag
+            fscore = person_fight_score.get(pid, 0.0)
+            if fscore > 0:
+                score += min(int(fscore / 5), 3)
+
             if abandoned_bags:
                 score += 2
 
@@ -495,7 +761,6 @@ class ThreatScorer:
             if pid not in self.session_scores:
                 self.session_scores[pid] = 0
 
-            # Only add if non-zero event
             if score > 0:
                 self.session_scores[pid] += score
 
@@ -521,7 +786,7 @@ FILE: config.py
 # config.py
 
 # Camera configuration
-CAMERA_SOURCE = 0
+CAMERA_SOURCE = "/home/vedant/suspicious_ai/assets/test.mp4"
 SHOW_FPS = True
 
 FRAME_WIDTH = 640
@@ -543,6 +808,9 @@ WINDOW_HEIGHT = 800
 # Scale factor applied ONLY to display (not detection)
 DISPLAY_SCALE = 1.6  # 1.0 = original, 1.5 = 150%, etc.
 
+# Video control step for seeking in playback mode.
+SEEK_STEP_SECONDS = 5
+
 # Drawing appearance
 BOX_THICKNESS = 2
 FONT_SCALE = 0.7
@@ -553,21 +821,26 @@ SAVE_FRAMES = False
 SAVE_CONFIDENCE = 0.5
 MOVEMENT_THRESHOLD = 30  # pixels
 
+MODEL_PATH = "yolov8n-pose.pt"  # pose model — gives keypoints for accurate conflict detection
+                                 # export with: YOLO("yolov8n-pose.pt").export(format="onnx", imgsz=320)
+                                 # then switch to "yolov8n-pose.onnx" for faster CPU inference
+
 CONFIDENCE = 0.2
 IOU_THRESHOLD = 0.5
-IMG_SIZE = 416
-# IMG_SIZE = 640
-# IMG_SIZE = 256
-# IMG_SIZE = 320
+IMG_SIZE = 320  # reduced from 416 for CPU performance (~40% faster inference)
+
+# Frame skipping: run full detection every N frames; intermediate frames reuse last result.
+# N=1 = no skipping. N=2 roughly doubles display FPS on CPU (10 FPS detect → ~17 FPS display).
+DETECT_EVERY_N = 2
 
 # Classes (COCO indices)
 PERSON = 0
 BACKPACK = 24
 HANDBAG = 26
 #SUITCASE = 28
-CELL_PHONE = 67
+#CELL_PHONE = 67
 
-DETECTION_CLASSES = [PERSON, BACKPACK, HANDBAG, CELL_PHONE]
+DETECTION_CLASSES = [PERSON, BACKPACK, HANDBAG]
 
 # Behavior thresholds
 LOITER_TIME = 3
@@ -592,7 +865,6 @@ ENABLE_PHONE_BEHAVIOR = False
 
 SUSPICION_THRESHOLD = 3
 
-ENABLE_BEEP = True
 ENABLE_CONSOLE_LOG = True
 ALERT_COOLDOWN = 5  # seconds between repeated alerts
 
@@ -616,8 +888,28 @@ ENABLE_CONFLICT_DETECTION = True
 PROXIMITY_DISTANCE = 200  # pixels
 DISTANCE_VELOCITY_THRESHOLD = 40  # pixels/second
 ACCELERATION_THRESHOLD = 40
-AREA_CHANGE_THRESHOLD = 0.20  # 25%
-CONFLICT_CONFIRM_FRAMES = 2
+AREA_CHANGE_THRESHOLD = 0.20
+
+# Conflict confirmation — require sustained signal, not just N frames
+CONFLICT_CONFIRM_FRAMES = 5      # consecutive frames with raw signal before confirming
+CONFLICT_MIN_DURATION = 1.5      # seconds of sustained signal required (prevents flash false positives)
+CONFLICT_CALM_FRAMES = 5         # calm frames before resetting the confirm counter
+
+# Calm contact suppression — handshake/hug: close together + low velocity sustained
+CALM_VELOCITY_THRESHOLD = 15     # px/s — below this while close = social contact, not conflict
+CALM_CONTACT_TIME = 1.5          # seconds of calm proximity → suppress conflict for this pair
+
+# Keypoint-based conflict analysis (pose model only)
+KP_CONF_MIN = 0.3        # minimum keypoint confidence to use a point
+STRIKE_DISTANCE = 80     # px — wrist within this distance of opponent nose → strike zone
+HIP_TOLERANCE = 70       # px — wrist within this of own hip height → handshake-like pose
+
+# Relative wrist velocity threshold (pixels/second, body-motion corrected)
+# A wrist moving faster than this relative to the person's own hips → strike signal
+RELATIVE_WRIST_VEL_THRESHOLD = 60   # px/s — lower = more sensitive, raise if too many false positives
+
+# Keypoint visualisation
+SHOW_KEYPOINTS = True    # draw skeleton + strike-zone overlay (useful for tuning, disable in prod)
 
 ================================================================================
 FILE: detection/__init__.py
@@ -630,27 +922,86 @@ FILE: detection/detector.py
 ================================================================================
 
 from ultralytics import YOLO
+import numpy as np
 import config
 
 
 class Detector:
-    def __init__(self, model_path="yolov8n.pt"):
+    def __init__(self, model_path=None):
+        if model_path is None:
+            model_path = config.MODEL_PATH
+        self.model_path = str(model_path)
         self.model = YOLO(model_path)
-        self.model.fuse()
+        self.is_pose = "pose" in self.model_path
+        # fuse() only applies to PyTorch models
+        if not self.model_path.endswith(".onnx"):
+            self.model.fuse()
+        # Pose model only detects persons; detection model uses full class list
+        self._classes = [config.PERSON] if self.is_pose else config.DETECTION_CLASSES
 
     def detect(self, frame):
-        # Track objects with configured thresholds and no console spam
         results = self.model.track(
             frame,
             imgsz=config.IMG_SIZE,
             conf=config.CONFIDENCE,
             iou=config.IOU_THRESHOLD,
-            classes=config.DETECTION_CLASSES,
+            classes=self._classes,
             persist=True,
             tracker="bytetrack.yaml",
             verbose=False,
         )
         return results[0]
+
+    def parse_tracked_objects(self, results):
+        """
+        Extract tracked objects + keypoints (when pose model) from a results object.
+        Returns a list of dicts ready for behavior detectors.
+        """
+        boxes = results.boxes
+        if boxes.id is None:
+            return []
+
+        ids         = boxes.id.cpu().numpy().astype(int)
+        xyxy        = boxes.xyxy.cpu().numpy()
+        classes     = boxes.cls.cpu().numpy().astype(int)
+        confidences = boxes.conf.cpu().numpy()
+
+        # Keypoints: shape (N, 17, 2) and (N, 17) — only present for pose model
+        kp_xy   = None
+        kp_conf = None
+        if self.is_pose and results.keypoints is not None:
+            kp_xy   = results.keypoints.xy.cpu().numpy()    # (N, 17, 2)
+            kp_conf = results.keypoints.conf.cpu().numpy()  # (N, 17)
+
+        objects = []
+        for i in range(len(ids)):
+            x1, y1, x2, y2 = xyxy[i]
+            objects.append({
+                "id":        ids[i],
+                "class":     classes[i],
+                "bbox":      (x1, y1, x2, y2),
+                "conf":      float(confidences[i]),
+                "name":      results.names[classes[i]],
+                "keypoints": kp_xy[i]   if kp_xy   is not None else None,  # (17, 2)
+                "kp_conf":   kp_conf[i] if kp_conf is not None else None,  # (17,)
+            })
+        return objects
+
+
+================================================================================
+FILE: export_model.py
+================================================================================
+
+"""
+One-time script to export yolov8n.pt → yolov8n.onnx at 320px input size.
+Run once: python export_model.py
+"""
+from ultralytics import YOLO
+
+model = YOLO("yolov8n.pt")
+model.export(format="onnx", imgsz=320, opset=12, simplify=True)
+print("Export complete → yolov8n.onnx")
+
 
 ================================================================================
 FILE: extract_project.py
@@ -798,108 +1149,219 @@ FILE: main.py
 
 import cv2
 import numpy as np
+import threading
+import queue
+import os
+import time
+from datetime import datetime
+
 from detection.detector import Detector
-from config import CAMERA_SOURCE, SHOW_FPS, SAVE_CONFIDENCE, MOVEMENT_THRESHOLD, WINDOW_NAME, WINDOW_MODE, WINDOW_WIDTH, WINDOW_HEIGHT, DISPLAY_SCALE, BOX_THICKNESS, FONT_SCALE, FONT_THICKNESS, FRAME_WIDTH, FRAME_HEIGHT
+from config import (CAMERA_SOURCE, SHOW_FPS, SAVE_CONFIDENCE, MOVEMENT_THRESHOLD,
+                    WINDOW_NAME, WINDOW_MODE, WINDOW_WIDTH, WINDOW_HEIGHT,
+                    DISPLAY_SCALE, BOX_THICKNESS, FONT_SCALE, FONT_THICKNESS,
+                    FRAME_WIDTH, FRAME_HEIGHT, SEEK_STEP_SECONDS)
 from utils.fps_tracker import FPSTracker
-from utils.drawing import setup_window
+from utils.drawing import setup_window, draw_keypoints
 from utils.event_logger import EventLogger
 from utils.audio import AudioManager
 from behavior.loitering import LoiteringDetector
 from behavior.conflict_detection import ConflictDetector
 from behavior.scoring import ThreatScorer
-import os
-import time
-from datetime import datetime
 from behavior.abandoned_object import AbandonedObjectDetector
 import config
+
 os.environ["QT_QPA_PLATFORM"] = "xcb"
 
-def main():
-    cap = cv2.VideoCapture(CAMERA_SOURCE)
-    detector = Detector()
-    loiter_detector = LoiteringDetector()
-    event_logger = EventLogger()
-    audio_manager = AudioManager()
-    alarm_active = True
-    last_abandon_detect_time = 0
-    ALARM_STABILITY_BUFFER = 0.5  # seconds
-    active_alert = None
-    alert_start_time = 0
-    
-    # Setup window based on configuration
-    setup_window()
 
-    # Create automation folder
-    save_dir = "saves"
-    if not os.path.exists(save_dir):
-        os.makedirs(save_dir)
-    
-    prev_time = time.time()
-    fps = 0
-    fps_tracker = FPSTracker(save_dir=save_dir)
-    
-    # Track object positions and save times
-    object_positions = {}
-    last_save_time = {}
+def _reset_temporal_state(loiter_detector, abandon_detector, conflict_detector, scorer):
+    """Clear time/history-dependent detector state after a seek jump."""
+    if hasattr(loiter_detector, "person_state"):
+        loiter_detector.person_state.clear()
+    if hasattr(abandon_detector, "bag_state"):
+        abandon_detector.bag_state.clear()
+    if hasattr(conflict_detector, "history"):
+        conflict_detector.history.clear()
+    if hasattr(conflict_detector, "person_kp"):
+        conflict_detector.person_kp.clear()
+    if hasattr(scorer, "instant_scores"):
+        scorer.instant_scores.clear()
 
-    abandon_detector = AbandonedObjectDetector()
-    conflict_detector = ConflictDetector()
-    scorer = ThreatScorer()
-    
-    current_alert_state = "NONE"
 
-    while True:
+def inference_worker(cap, detector, loiter_detector, abandon_detector,
+                     conflict_detector, scorer, result_queue, control_queue,
+                     stop_event):
+    """
+    Runs in a background thread.
+    Captures frames, runs detection every DETECT_EVERY_N frames (reuses last
+    result on skipped frames), runs behavior analysis on every frame, and
+    pushes results into result_queue (maxsize=1, drop-on-full so display always
+    gets the freshest result).
+    """
+    frame_count = 0
+    last_tracked_objects = []
+
+    while not stop_event.is_set():
+        seek_applied = False
+
+        # Apply queued controls before reading next frame.
+        while True:
+            try:
+                command = control_queue.get_nowait()
+            except queue.Empty:
+                break
+
+            if command.get("type") != "seek":
+                continue
+
+            seek_seconds = float(command.get("seconds", 0.0))
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            if fps <= 0:
+                fps = 30.0
+
+            current_frame = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            target_frame = current_frame + int(seek_seconds * fps)
+
+            if total_frames > 0:
+                target_frame = max(0, min(target_frame, total_frames - 1))
+            else:
+                target_frame = max(0, target_frame)
+
+            cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+            frame_count = target_frame
+            last_tracked_objects = []
+            _reset_temporal_state(loiter_detector, abandon_detector, conflict_detector, scorer)
+            seek_applied = True
+
+            # Flush display queue so stale pre-seek frames are dropped.
+            while True:
+                try:
+                    result_queue.get_nowait()
+                except queue.Empty:
+                    break
+
         ret, frame = cap.read()
         if not ret:
             break
 
-        frame = cv2.resize(frame, (640, 480))
-        results = detector.detect(frame)
-        
-        boxes = results.boxes
-        frame_copy = frame.copy()  # Copy for saving with bounding boxes
-        
-        tracked_objects = []
-        if boxes.id is not None:
-            ids = boxes.id.cpu().numpy().astype(int)
-            xyxy = boxes.xyxy.cpu().numpy()
-            classes = boxes.cls.cpu().numpy().astype(int)
-            confidences = boxes.conf.cpu().numpy()
+        frame = cv2.resize(frame, (FRAME_WIDTH, FRAME_HEIGHT))
 
-            for i in range(len(ids)):
-                x1, y1, x2, y2 = xyxy[i]
-                obj_id = ids[i]
-                cls = classes[i]
+        # Video timestamp — used by conflict detector for accurate velocity dt
+        # regardless of how fast/slow we process frames
+        video_timestamp = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
 
-                tracked_objects.append({
-                    "id": obj_id,
-                    "class": cls,
-                    "bbox": (x1, y1, x2, y2)
-                })
+        if frame_count % config.DETECT_EVERY_N == 0:
+            results = detector.detect(frame)
+            tracked_objects = detector.parse_tracked_objects(results)
+            last_tracked_objects = tracked_objects
+        else:
+            tracked_objects = last_tracked_objects
+
+        frame_count += 1
 
         suspicious_ids = loiter_detector.update(tracked_objects)
         suspicious_bags = abandon_detector.update(tracked_objects)
-        conflict_alert = conflict_detector.update(tracked_objects)
+        conflict_alert, pair_scores = conflict_detector.update(tracked_objects, video_timestamp)
         instant_scores, session_scores = scorer.update(
-            tracked_objects,
-            suspicious_ids,
-            suspicious_bags,
-            conflict_alert,
+            tracked_objects, suspicious_ids, suspicious_bags, conflict_alert, pair_scores
         )
 
+        result = {
+            "frame":           frame,
+            "tracked_objects": tracked_objects,
+            "suspicious_ids":  suspicious_ids,
+            "suspicious_bags": suspicious_bags,
+            "conflict_alert":  conflict_alert,
+            "instant_scores":  instant_scores,
+            "session_scores":  session_scores,
+            "seek_applied":    seek_applied,
+        }
+
+        # Drop stale result — display always gets the freshest frame
+        try:
+            result_queue.get_nowait()
+        except queue.Empty:
+            pass
+        result_queue.put(result)
+
+
+def main():
+    cap = cv2.VideoCapture(CAMERA_SOURCE)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
+
+    detector = Detector()
+    loiter_detector = LoiteringDetector()
+    abandon_detector = AbandonedObjectDetector()
+    conflict_detector = ConflictDetector()
+    scorer = ThreatScorer()
+    event_logger = EventLogger()
+    audio_manager = AudioManager()
+
+    setup_window()
+    save_dir = "saves"
+    os.makedirs(save_dir, exist_ok=True)
+
+    fps_tracker = FPSTracker(save_dir=save_dir)
+    object_positions = {}
+    last_save_time = {}
+
+    active_alert = None
+    alert_start_time = 0
+    current_alert_state = "NONE"
+    prev_time = time.time()
+
+    result_queue = queue.Queue(maxsize=1)
+    control_queue = queue.Queue(maxsize=8)
+    stop_event = threading.Event()
+
+    worker = threading.Thread(
+        target=inference_worker,
+        args=(cap, detector, loiter_detector, abandon_detector,
+              conflict_detector, scorer, result_queue, control_queue, stop_event),
+        daemon=True,
+    )
+    worker.start()
+
+    last_result = None
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    video_seek_enabled = total_frames > 0
+
+    while True:
+        try:
+            last_result = result_queue.get(timeout=0.1)
+        except queue.Empty:
+            if last_result is None:
+                continue  # Nothing to show yet
+
+        result = last_result
+        frame = result["frame"]
+        tracked_objects = result["tracked_objects"]
+        suspicious_ids = result["suspicious_ids"]
+        suspicious_bags = result["suspicious_bags"]
+        conflict_alert = result["conflict_alert"]
+        instant_scores = result["instant_scores"]
+        session_scores = result["session_scores"]
+        seek_applied = result.get("seek_applied", False)
+
+        frame_copy = frame.copy()
         current_time = time.time()
 
-        # Determine new alert state based on priority
-        new_alert_state = "NONE"
+        if seek_applied:
+            object_positions.clear()
+            last_save_time.clear()
+            active_alert = None
+            current_alert_state = "NONE"
+            audio_manager.stop_alarm()
 
+        # Alert state machine
+        new_alert_state = "NONE"
         if conflict_alert:
             new_alert_state = "CONFLICT"
         elif suspicious_bags:
             new_alert_state = "ABANDONED"
 
-        # Only react if state changes
         if new_alert_state != current_alert_state:
-            # Stop previous alarm if needed
             if current_alert_state != "NONE":
                 audio_manager.stop_alarm()
 
@@ -908,282 +1370,193 @@ def main():
                 alert_start_time = current_time
                 audio_manager.start_alarm()
                 event_logger.log("conflict", "Possible physical conflict detected!", config.ALERT_COOLDOWN)
-
             elif new_alert_state == "ABANDONED":
                 active_alert = "ABANDONED OBJECT DETECTED"
                 alert_start_time = current_time
                 audio_manager.start_alarm()
                 event_logger.log("abandon", "Abandoned object detected!", config.ALERT_COOLDOWN)
-
             else:
                 active_alert = None
 
             current_alert_state = new_alert_state
 
-        if boxes.id is not None:
-            check_time = time.time()
-            save_frame = False
-            detected_objects = []
+        # Draw bounding boxes
+        check_time = time.time()
+        save_frame = False
+        detected_objects = []
 
-            for i in range(len(ids)):
-                x1, y1, x2, y2 = xyxy[i]
-                obj_id = ids[i]
-                cls = classes[i]
-                class_name = results.names[cls]
+        for obj in tracked_objects:
+            x1, y1, x2, y2 = obj["bbox"]
+            obj_id = obj["id"]
+            cls = obj["class"]
+            class_name = obj["name"]
+            conf = obj["conf"]
 
-                if config.SAVE_FRAMES and confidences[i] > SAVE_CONFIDENCE:
-                    # Calculate center position
-                    center_x = (x1 + x2) / 2
-                    center_y = (y1 + y2) / 2
-                    current_pos = (center_x, center_y)
+            color = (0, 255, 0)
+            if obj_id in suspicious_ids or obj_id in suspicious_bags:
+                color = (0, 0, 255)
 
-                    # Check for movement
-                    is_moving = False
-                    if obj_id in object_positions:
-                        prev_pos = object_positions[obj_id]
-                        distance = ((current_pos[0] - prev_pos[0])**2 +
-                                   (current_pos[1] - prev_pos[1])**2)**0.5
-                        if distance > MOVEMENT_THRESHOLD:
-                            is_moving = True
+            label = f"{class_name} ID:{obj_id}"
+            if cls == config.PERSON and obj_id in instant_scores:
+                level = scorer.get_level(instant_scores[obj_id])
+                session_total = session_scores.get(obj_id, 0)
+                label += f" | Threat: {level} | Session: {session_total}"
 
-                    # Update position
-                    object_positions[obj_id] = current_pos
+            cv2.rectangle(frame_copy, (int(x1), int(y1)), (int(x2), int(y2)), color, BOX_THICKNESS)
+            cv2.putText(frame_copy, label, (int(x1), int(y1) - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, FONT_SCALE, color, FONT_THICKNESS)
 
-                    # Determine if we should save
-                    if obj_id not in last_save_time:
-                        last_save_time[obj_id] = 0
+            # Skeleton + strike-zone overlay
+            if config.SHOW_KEYPOINTS and cls == config.PERSON:
+                persons_in_frame = [o for o in tracked_objects if o["class"] == config.PERSON]
+                draw_keypoints(frame_copy, obj, all_persons=persons_in_frame)
 
-                    time_since_last_save = check_time - last_save_time[obj_id]
+            if config.SAVE_FRAMES and conf > SAVE_CONFIDENCE:
+                center_x = (x1 + x2) / 2
+                center_y = (y1 + y2) / 2
+                current_pos = (center_x, center_y)
+                is_moving = False
+                if obj_id in object_positions:
+                    prev_pos = object_positions[obj_id]
+                    dist = ((current_pos[0] - prev_pos[0])**2 + (current_pos[1] - prev_pos[1])**2) ** 0.5
+                    if dist > MOVEMENT_THRESHOLD:
+                        is_moving = True
+                object_positions[obj_id] = current_pos
+                last_save_time.setdefault(obj_id, 0)
+                if is_moving or check_time - last_save_time[obj_id] >= 1.0:
+                    save_frame = True
+                    last_save_time[obj_id] = check_time
+                    if class_name not in detected_objects:
+                        detected_objects.append(class_name)
 
-                    # Save logic: moving objects save immediately, stationary save once per second
-                    if is_moving or time_since_last_save >= 1.0:
-                        save_frame = True
-                        last_save_time[obj_id] = check_time
-                        if class_name not in detected_objects:
-                            detected_objects.append(class_name)
+        if config.SAVE_FRAMES and save_frame and detected_objects:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            filename = os.path.join(save_dir, f"detected_{'_'.join(detected_objects)}_{timestamp}.jpg")
+            cv2.imwrite(filename, frame_copy)
 
-                # Draw bounding box with object name
-                color = (0, 255, 0)
-                if obj_id in suspicious_ids:
-                    color = (0, 0, 255)
-                if obj_id in suspicious_bags:
-                    color = (0, 0, 255)
-                label = f"{class_name} ID:{obj_id}"
-
-                if cls == config.PERSON and obj_id in instant_scores:
-                    level = scorer.get_level(instant_scores[obj_id])
-                    session_total = session_scores.get(obj_id, 0)
-                    label += f" | Threat: {level} | Session: {session_total}"
-
-                cv2.rectangle(frame_copy, (int(x1), int(y1)), (int(x2), int(y2)), color, BOX_THICKNESS)
-                cv2.putText(frame_copy, label, (int(x1), int(y1)-10),
-                            cv2.FONT_HERSHEY_SIMPLEX, FONT_SCALE, color, FONT_THICKNESS)
-
-            # Save frame with bounding boxes if needed
-            if config.SAVE_FRAMES and save_frame and detected_objects:
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-                objects_str = "_".join(detected_objects)
-                filename = os.path.join(save_dir, f"detected_{objects_str}_{timestamp}.jpg")
-                cv2.imwrite(filename, frame_copy)
-                print(f"Saved: {filename}")
-        
-        # Calculate and display FPS
+        # FPS counter
         if SHOW_FPS:
-            current_time = time.time()
-            fps = 1 / (current_time - prev_time)
+            fps = 1.0 / max(current_time - prev_time, 1e-6)
             prev_time = current_time
             fps_tracker.update(fps)
             avg_fps = fps_tracker.get_average_fps()
             cv2.putText(frame_copy, f"FPS: {fps:.1f} (Avg: {avg_fps:.1f})", (20, 40),
-                       cv2.FONT_HERSHEY_SIMPLEX, FONT_SCALE, (0, 255, 0), FONT_THICKNESS)
+                        cv2.FONT_HERSHEY_SIMPLEX, FONT_SCALE, (0, 255, 0), FONT_THICKNESS)
 
-        # Draw alert banner when active
+        # Alert banner
         if config.SHOW_ALERT_BANNER and active_alert:
-            if time.time() - alert_start_time < config.ALERT_BANNER_DURATION:
+            if current_time - alert_start_time < config.ALERT_BANNER_DURATION:
                 overlay = frame_copy.copy()
                 cv2.rectangle(overlay, (0, 0), (frame_copy.shape[1], 80), (0, 0, 255), -1)
                 cv2.addWeighted(overlay, 0.6, frame_copy, 0.4, 0, frame_copy)
-
-                cv2.putText(
-                    frame_copy,
-                    active_alert,
-                    (50, 50),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    1.2,
-                    (255, 255, 255),
-                    3
-                )
+                cv2.putText(frame_copy, active_alert, (50, 50),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 3)
             else:
                 active_alert = None
 
-        # Create extended canvas for camera preview + side panel
+        # Side panel
         panel_width = 350
         h, w, _ = frame_copy.shape
         extended_frame = np.zeros((h, w + panel_width, 3), dtype=np.uint8)
-        
-        # Copy camera preview to left side
         extended_frame[:, :w] = frame_copy
-        
-        # Draw dark panel background on right side
         extended_frame[:, w:] = (30, 30, 30)
 
-        # Draw panel content on the right side
-        panel_x = w  # Start of panel area
+        panel_x = w
         margin_left = 15
-        
-        # Panel title
         y_offset = 35
-        cv2.putText(
-            extended_frame,
-            "THREAT ANALYSIS",
-            (panel_x + margin_left, y_offset),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.8,
-            (0, 255, 255),
-            2,
-        )
-        
-        # Separator line
+
+        cv2.putText(extended_frame, "THREAT ANALYSIS", (panel_x + margin_left, y_offset),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
         y_offset += 10
-        cv2.line(
-            extended_frame,
-            (panel_x + margin_left, y_offset),
-            (panel_x + panel_width - margin_left, y_offset),
-            (100, 100, 100),
-            1
-        )
-        
-        # Active Threats section
+        cv2.line(extended_frame,
+                 (panel_x + margin_left, y_offset),
+                 (panel_x + panel_width - margin_left, y_offset),
+                 (100, 100, 100), 1)
         y_offset += 30
-        cv2.putText(
-            extended_frame,
-            "ACTIVE THREATS:",
-            (panel_x + margin_left, y_offset),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (150, 150, 150),
-            1,
-        )
-        
+
+        cv2.putText(extended_frame, "ACTIVE THREATS:", (panel_x + margin_left, y_offset),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
         y_offset += 25
-        
-        # Display each person's threat score
+
         for pid, score in instant_scores.items():
             level = scorer.get_level(score)
             session_total = session_scores.get(pid, 0)
-            
-            # Determine color based on threat level
             color = (0, 255, 0)
             if level == "SUSPICIOUS":
                 color = (0, 165, 255)
             elif level == "HIGH":
                 color = (0, 0, 255)
-            
-            # ID label
-            cv2.putText(
-                extended_frame,
-                f"ID {pid}:",
-                (panel_x + margin_left + 10, y_offset),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.55,
-                (200, 200, 200),
-                1,
-            )
-            
-            # Threat level
-            cv2.putText(
-                extended_frame,
-                level,
-                (panel_x + margin_left + 70, y_offset),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.55,
-                color,
-                2,
-            )
-            
-            # Current score
-            cv2.putText(
-                extended_frame,
-                f"({score})",
-                (panel_x + margin_left + 185, y_offset),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                (180, 180, 180),
-                1,
-            )
-            
+
+            cv2.putText(extended_frame, f"ID {pid}:", (panel_x + margin_left + 10, y_offset),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
+            cv2.putText(extended_frame, level, (panel_x + margin_left + 70, y_offset),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
+            cv2.putText(extended_frame, f"({score})", (panel_x + margin_left + 185, y_offset),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 180), 1)
             y_offset += 22
-            
-            # Session total on next line
-            cv2.putText(
-                extended_frame,
-                f"  Session Total: {session_total}",
-                (panel_x + margin_left + 10, y_offset),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.45,
-                (150, 150, 150),
-                1,
-            )
-            
+            cv2.putText(extended_frame, f"  Session Total: {session_total}",
+                        (panel_x + margin_left + 10, y_offset),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (150, 150, 150), 1)
             y_offset += 28
-        
-        # Event Timeline section
+
         if event_logger.timeline:
             y_offset = max(y_offset + 20, h - 150)
-            
-            cv2.putText(
-                extended_frame,
-                "EVENT TIMELINE:",
-                (panel_x + margin_left, y_offset),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                (150, 150, 150),
-                1,
-            )
-            
+            cv2.putText(extended_frame, "EVENT TIMELINE:", (panel_x + margin_left, y_offset),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
             y_offset += 25
-            
-            recent = event_logger.timeline[-3:]
-            for _, msg in recent:
-                # Truncate message if too long
+            for _, msg in event_logger.timeline[-3:]:
                 display_msg = msg[:30] + "..." if len(msg) > 30 else msg
-                cv2.putText(
-                    extended_frame,
-                    f"• {display_msg}",
-                    (panel_x + margin_left + 5, y_offset),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.4,
-                    (255, 255, 255),
-                    1,
-                )
+                cv2.putText(extended_frame, f"• {display_msg}", (panel_x + margin_left + 5, y_offset),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
                 y_offset += 20
-        
-        # Use extended frame as the display frame
-        frame_copy = extended_frame
 
-        display_frame = frame_copy
+        controls_text = "Controls: q Quit"
+        if video_seek_enabled:
+            controls_text += f" | a/<- Back {SEEK_STEP_SECONDS}s | d/-> Forward {SEEK_STEP_SECONDS}s"
+        cv2.putText(extended_frame, controls_text, (15, h - 15),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 180), 1)
+
+        display_frame = extended_frame
         if DISPLAY_SCALE != 1.0:
-            display_frame = cv2.resize(
-                frame_copy,
-                None,
-                fx=DISPLAY_SCALE,
-                fy=DISPLAY_SCALE
-            )
+            display_frame = cv2.resize(extended_frame, None, fx=DISPLAY_SCALE, fy=DISPLAY_SCALE)
 
         cv2.imshow(WINDOW_NAME, display_frame)
 
-        if cv2.waitKey(1) & 0xFF == ord('q'):
+        key = cv2.waitKeyEx(1)
+        key_ascii = key & 0xFF
+
+        if key_ascii == ord('q'):
             break
 
-    # Save FPS data and plot at the end of session
+        if video_seek_enabled:
+            seek_seconds = None
+
+            if key_ascii == ord('a') or key in (81, 2424832):  # left arrow
+                seek_seconds = -SEEK_STEP_SECONDS
+            elif key_ascii == ord('d') or key in (83, 2555904):  # right arrow
+                seek_seconds = SEEK_STEP_SECONDS
+
+            if seek_seconds is not None:
+                try:
+                    control_queue.put_nowait({"type": "seek", "seconds": seek_seconds})
+                except queue.Full:
+                    # Keep only the freshest seek command.
+                    try:
+                        control_queue.get_nowait()
+                    except queue.Empty:
+                        pass
+                    control_queue.put_nowait({"type": "seek", "seconds": seek_seconds})
+
+    stop_event.set()
+    worker.join(timeout=2)
     fps_tracker.finalize()
-    
     cap.release()
     cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
     main()
+
 
 ================================================================================
 FILE: utils/__init__.py
@@ -1236,7 +1609,110 @@ FILE: utils/drawing.py
 ================================================================================
 
 import cv2
+import math
 import config
+
+# COCO 17-point skeleton connections (index pairs)
+_SKELETON = [
+    (0, 1), (0, 2),           # nose → eyes
+    (1, 3), (2, 4),           # eyes → ears
+    (5, 6),                   # shoulders
+    (5, 7), (7, 9),           # left arm
+    (6, 8), (8, 10),          # right arm
+    (5, 11), (6, 12),         # torso sides
+    (11, 12),                 # hips
+    (11, 13), (13, 15),       # left leg
+    (12, 14), (14, 16),       # right leg
+]
+
+# Per-keypoint colours (BGR) — arms bright, legs muted, face neutral
+_KP_COLORS = {
+    0:  (200, 200, 200),   # nose
+    1:  (200, 200, 200),   # left eye
+    2:  (200, 200, 200),   # right eye
+    3:  (200, 200, 200),   # left ear
+    4:  (200, 200, 200),   # right ear
+    5:  (0, 255, 128),     # left shoulder
+    6:  (0, 255, 128),     # right shoulder
+    7:  (0, 200, 255),     # left elbow
+    8:  (0, 200, 255),     # right elbow
+    9:  (0, 60, 255),      # left wrist   ← highlighted
+    10: (0, 60, 255),      # right wrist  ← highlighted
+    11: (128, 0, 255),     # left hip
+    12: (128, 0, 255),     # right hip
+    13: (200, 128, 0),     # left knee
+    14: (200, 128, 0),     # right knee
+    15: (200, 200, 0),     # left ankle
+    16: (200, 200, 0),     # right ankle
+}
+
+
+def draw_keypoints(frame, obj, all_persons=None):
+    """
+    Draw skeleton, joint dots, and conflict-analysis overlays on `frame`.
+
+    obj         — tracked object dict with 'keypoints' (17,2) and 'kp_conf' (17,)
+    all_persons — list of other person dicts; used to colour wrists red when
+                  they are inside another person's strike zone.
+    """
+    kps  = obj.get("keypoints")
+    kpcs = obj.get("kp_conf")
+    if kps is None or kpcs is None:
+        return
+
+    threshold = config.KP_CONF_MIN
+
+    def pt(idx):
+        """Return integer (x, y) if confidence is sufficient, else None."""
+        if kpcs[idx] >= threshold:
+            return (int(kps[idx][0]), int(kps[idx][1]))
+        return None
+
+    # ── 1. Skeleton lines ──────────────────────────────────────────────
+    for a, b in _SKELETON:
+        pa, pb = pt(a), pt(b)
+        if pa and pb:
+            cv2.line(frame, pa, pb, (80, 80, 80), 1, cv2.LINE_AA)
+
+    # ── 2. Collect nose positions of all OTHER persons for strike-zone check ──
+    other_noses = []
+    if all_persons:
+        for other in all_persons:
+            if other is obj:
+                continue
+            okps  = other.get("keypoints")
+            okpcs = other.get("kp_conf")
+            if okps is not None and okpcs is not None and okpcs[0] >= threshold:
+                other_noses.append((float(okps[0][0]), float(okps[0][1])))
+
+    # ── 3. Strike-zone circle around THIS person's nose ──────────────
+    nose = pt(0)
+    if nose:
+        cv2.circle(frame, nose, config.STRIKE_DISTANCE,
+                   (0, 140, 255), 1, cv2.LINE_AA)   # orange ring
+
+    # ── 4. Keypoint dots ──────────────────────────────────────────────
+    for idx in range(17):
+        p = pt(idx)
+        if not p:
+            continue
+
+        color = _KP_COLORS.get(idx, (180, 180, 180))
+
+        # Wrists: check if inside any opponent's strike zone → paint red
+        if idx in (9, 10) and other_noses:
+            px, py = float(kps[idx][0]), float(kps[idx][1])
+            in_strike = any(
+                math.hypot(px - nx, py - ny) < config.STRIKE_DISTANCE
+                for nx, ny in other_noses
+            )
+            if in_strike:
+                color = (0, 0, 255)   # bright red — strike zone active
+                # Draw a pulsing ring around the wrist for visibility
+                cv2.circle(frame, p, 10, (0, 0, 255), 2, cv2.LINE_AA)
+
+        radius = 5 if idx in (9, 10) else 3   # wrists slightly bigger
+        cv2.circle(frame, p, radius, color, -1, cv2.LINE_AA)
 
 
 def setup_window():
@@ -1392,5 +1868,5 @@ def distance(p1, p2):
     return math.hypot(p1[0] - p2[0], p1[1] - p2[1])
 
 ================================================================================
-SUMMARY: 19 Python files extracted
+SUMMARY: 20 Python files extracted
 ================================================================================

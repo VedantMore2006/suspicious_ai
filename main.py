@@ -382,9 +382,13 @@ def main():
         if video_seek_enabled:
             seek_seconds = None
 
-            if key_ascii == ord('a') or key in (81, 2424832):  # left arrow
+            # Arrow key codes vary by OS/backend:
+            #   Linux X11/xcb: 65361 (left), 65363 (right)
+            #   Windows:       2424832 (left), 2555904 (right)
+            #   Some Linux:    81 (left), 83 (right) via waitKey low byte
+            if key_ascii == ord('a') or key in (65361, 81, 2424832):   # left arrow
                 seek_seconds = -SEEK_STEP_SECONDS
-            elif key_ascii == ord('d') or key in (83, 2555904):  # right arrow
+            elif key_ascii == ord('d') or key in (65363, 83, 2555904): # right arrow
                 seek_seconds = SEEK_STEP_SECONDS
 
             if seek_seconds is not None:

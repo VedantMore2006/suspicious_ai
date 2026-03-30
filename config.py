@@ -125,3 +125,4 @@ RELATIVE_WRIST_VEL_THRESHOLD = 60   # px/s — lower = more sensitive, raise if 
 
 # Keypoint visualisation
 SHOW_KEYPOINTS = True    # draw skeleton + strike-zone overlay (useful for tuning, disable in prod)
+DEBUG_KEYPOINTS = True   # overlay KP indices, active signal labels, rel-wrist-vel value

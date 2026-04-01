@@ -100,11 +100,13 @@ def _pose_signals(
     torso_B = ((x1B + x2B) / 2.0, (y1B + y2B) / 2.0)
     torso_r_A = max(15.0, min(x2A - x1A, y2A - y1A) * config.TORSO_STRIKE_RADIUS_RATIO)
     torso_r_B = max(15.0, min(x2B - x1B, y2B - y1B) * config.TORSO_STRIKE_RADIUS_RATIO)
+    head_radius_A = max(15.0, (y2A - y1A) * 0.12)
+    head_radius_B = max(15.0, (y2B - y1B) * 0.12)
 
     # ── Conflict signal 1: wrist of A near nose of B (strike zone) ──
     if nose_B and wrists_A:
         for w_idx, w in zip([_L_WRIST, _R_WRIST], [wL_A, wR_A]):
-            if w and math.hypot(w[0] - nose_B[0], w[1] - nose_B[1]) < config.STRIKE_DISTANCE:
+            if w and math.hypot(w[0] - nose_B[0], w[1] - nose_B[1]) < head_radius_B:
                 conflict_boost = True
                 fight_score += 3.0
                 signals_A.append(f"KP{w_idx}→nose[B]: STRIKE ZONE")
@@ -112,7 +114,7 @@ def _pose_signals(
     # ── Conflict signal 1 (reciprocal): wrist of B near nose of A ──
     if nose_A and wrists_B:
         for w_idx, w in zip([_L_WRIST, _R_WRIST], [wL_B, wR_B]):
-            if w and math.hypot(w[0] - nose_A[0], w[1] - nose_A[1]) < config.STRIKE_DISTANCE:
+            if w and math.hypot(w[0] - nose_A[0], w[1] - nose_A[1]) < head_radius_A:
                 conflict_boost = True
                 fight_score += 3.0
                 signals_B.append(f"KP{w_idx}→nose[A]: STRIKE ZONE")

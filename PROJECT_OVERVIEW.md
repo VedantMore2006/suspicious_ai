@@ -6,6 +6,27 @@ A real-time behavioral intelligence system that analyzes live video streams to d
 
 The system demonstrates that behavioral analysis is fundamentally different from object classification—behavior unfolds over time and requires tracking state, velocity, acceleration, and interaction context.
 
+## Breakthrough Status Update (April 2026)
+
+The project moved from mostly reactive alerts to proactive conflict intelligence with lower latency and stronger social-contact suppression.
+
+### What Was Added
+- Dual runtime modes in `main.py`:
+  - Live preview: `python main.py --live`
+  - Offline/debug playback: `python main.py`
+  - Source override: `python main.py --source <path_or_camera_id>`
+- Pose-aware proactive conflict logic:
+  - Dynamic head strike radius (scaled by person bbox height)
+  - Dynamic torso strike zone (center-mass body-hit detection)
+  - Fast-track trigger on raw wrist-velocity spikes
+  - Wind-up anticipation signal (elbow-to-shoulder contraction speed)
+  - Early alerting via fight-session score threshold (not only timer confirmation)
+- Anti-false-positive stability gates:
+  - Symmetry suppression is ignored in low-motion noise
+  - Separation-aware grace logic prevents hug-retraction spikes
+  - Grapple/struggle override avoids classifying slow wrestling as calm contact
+  - Pair/person temporal state grace period prevents immediate state loss on tracker flicker
+
 ---
 
 ## Project Intent & Motivation
@@ -156,13 +177,19 @@ Each detector encapsulates one behavioral pattern and returns suspicious indicat
 #### 3. **ConflictDetector** (`behavior/conflict_detection.py`)
 **What it detects**: Physical altercations or hostile interactions
 - Analyzes pairs of persons
-- Computes:
+- Computes motion + pose interaction cues:
   - **Proximity**: Center-to-center distance < 200px
   - **Velocity**: Relative approach speed
   - **Acceleration**: Rapid velocity changes
-  - **Area overlap**: Bounding box overlap indicating close contact
+  - **Area/shape change**: Erratic bbox deformation as struggle signal
+  - **Head/torso strike zones**: Dynamic keypoint-driven impact regions
+  - **Relative wrist velocity**: Smoothed + raw fast-track spikes
+  - **Wind-up anticipation**: Elbow/shoulder contraction dynamics
 
-**Confirmation logic**: Requires 2+ consecutive frames of conflict signals to trigger (noise filtering)
+**Confirmation logic**:
+- Short confirmation window (`CONFLICT_CONFIRM_FRAMES=3`, `CONFLICT_MIN_DURATION=0.5`)
+- Proactive score gate (`FIGHT_SESSION_TRIGGER`) for earlier alerting
+- Calm-contact suppression + separation/grapple-aware overrides
 
 **Reasoning**: Violence typically involves sustained proximity + rapid directional changes + physical contact
 
@@ -310,9 +337,7 @@ GRACE_PERIOD = 0.7                    # hysteresis for flicker filtering
 ## Current Limitations & Known Issues
 
 ### 1. **False Positives from Cooperative Interactions**
-- Handshakes, crowding, hugging trigger conflict detection
-- **Root cause**: Conflict detector based only on proximity + velocity, not actual contact intent
-- **Mitigation**: Session scoring helps—true conflicts sustained longer
+- Reduced significantly via pose-aware suppressors and separation/grapple gates, but dense occlusion and ID switches can still cause edge-case mistakes.
 
 ### 2. **Tracking ID Resets**
 - When person leaves frame and re-enters, gets new ID
@@ -325,7 +350,7 @@ GRACE_PERIOD = 0.7                    # hysteresis for flicker filtering
 - **Crowded scenes**: ByteTrack ID swapping between similar-sized people
 
 ### 4. **Limited Detection Classes**
-- Only 4 classes supported (person, 2 bag types, phone)
+- In pose-priority mode, tracking is primarily person-centric to improve conflict reasoning.
 - Can't detect weapons, suspicious containers, or other threat indicators
 - Phone detection unreliable if held partially out of frame
 
@@ -369,9 +394,8 @@ Each behavior detector is independent:
 ## Future Directions
 
 ### 1. **Pose-Based Interaction Modeling**
-- Use pose estimation (MediaPipe, OpenPose) to detect actual contact
-- Distinguish fighting from friendly greeting geometrically
-- Detect prone persons (injury/overdose)
+- Extend current pose-aware engine with richer whole-body interaction templates (kicks, takedowns, prone states).
+- Add explicit shoulder/limb contact maps and intent scoring.
 
 ### 2. **Person Re-identification (ReID)**
 - Embed person appearance features
@@ -417,8 +441,17 @@ Each behavior detector is independent:
 # Activate environment
 conda activate project_env
 
-# Start detector
+# Start offline/debug playback (uses config source)
 python main.py
+
+# Start live preview from webcam 0
+python main.py --live
+
+# Start live preview from webcam 1
+python main.py --live --camera-id 1
+
+# Override source directly
+python main.py --source assets/test.mp4
 
 # Press 'q' to quit
 # Outputs saved to ./saves/

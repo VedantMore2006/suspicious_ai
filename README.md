@@ -9,11 +9,29 @@ This project tracks people and objects from a live camera/video feed and raises 
 - Per-person threat scoring and session risk accumulation
 - Visual alert banner, side-panel threat dashboard, event timeline, and alarm sound
 
+## Breakthrough Updates (April 2026)
+
+- Added dual runtime modes in `main.py`:
+    - Live preview mode: `python main.py --live`
+    - Offline/debug playback mode: `python main.py`
+    - Optional source override: `python main.py --source <path_or_camera_id>`
+- Upgraded conflict detection from mostly reactive logic to proactive pose-aware logic:
+    - Dynamic strike zones (head radius based on person bbox height)
+    - Torso strike-zone detection for lighter body hits/shoves
+    - Fast-track raw wrist-velocity spike trigger
+    - Wind-up anticipation (elbow-to-shoulder shrink speed)
+    - Early score-based alert gate via fight-session threshold
+- Added social-contact suppression and stability improvements:
+    - Symmetry gate now ignores low-motion jitter
+    - Separation-aware calm-contact logic to prevent hug-retraction false spikes
+    - Grapple/struggle override so slow wrestling is not mislabeled as a hug
+    - 1.5-second grace period before dropping pair/person temporal state
+
 ## What This Project Does
 
 At runtime, the app:
 1. Captures frames from a camera source.
-2. Runs YOLOv8 tracking (`ByteTrack`) on selected classes (person, backpack, handbag, phone).
+2. Runs YOLOv8 tracking (`ByteTrack`) and extracts pose keypoints when pose model is enabled.
 3. Sends tracked objects into behavior detectors.
 4. Computes instant and cumulative threat scores.
 5. Draws bounding boxes, threat labels, and a right-side analysis panel.
@@ -176,6 +194,24 @@ pip install pygame
 python main.py
 ```
 
+Live preview mode:
+
+```bash
+python main.py --live
+```
+
+Live preview with specific camera index:
+
+```bash
+python main.py --live --camera-id 1
+```
+
+Override source directly (video path or camera ID string):
+
+```bash
+python main.py --source assets/test.mp4
+```
+
 Press `q` in the OpenCV window to exit.
 
 ## Requirements
@@ -202,25 +238,25 @@ During/after execution, these outputs can appear:
 - `behavior/phone_behavior.py` exists and is configurable but is not currently called from `main.py`.
 - `behavior/phone_usage.py` and `utils/fps.py` are placeholders (empty).
 - For better model accuracy/performance tradeoffs, you can swap `yolov8n.pt` with another YOLOv8 variant.
+- Conflict detection is now keypoint-aware and includes proactive fight-session scoring + suppression gates.
 
 ## Limitations
 
 ### Behavioral Detection
 - **Loitering does not trigger audio** — it only changes bounding box color and updates the threat score. The alarm only fires for `CONFLICT` and `ABANDONED` states.
-- **Conflict detection has no pose awareness** — it is based purely on proximity, bounding-box velocity, and area change. Two people standing close together, hugging, or shaking hands can trigger false positives.
+- **Conflict detection is still heuristic** — it now uses pose cues and suppression gates, but extreme occlusion/crowding can still cause misses or false positives.
 - **Loitering timer resets on re-entry** — if a person leaves the frame and comes back, their stationary timer starts fresh; repeat loitering across separate visits is not tracked.
 - **Abandoned object distance is pixel-based** — `ABANDON_DISTANCE` is measured in screen pixels, so its effective real-world range changes with camera zoom, angle, or resolution.
 - **Phone behavior is unfinished** — `PhoneBehaviorDetector` is implemented but not wired into the main loop or the scoring system yet.
 
 ### Tracking and Detection
 - **Single camera only** — the system reads one `CAMERA_SOURCE` at a time; there is no multi-feed or multi-camera support.
-- **Limited detection classes** — only `PERSON`, `BACKPACK`, `HANDBAG`, and `CELL_PHONE` (COCO IDs) are tracked. Other suspicious items (e.g. suitcases, weapons) are ignored by default.
+- **Default pose mode is person-centric** — with pose model enabled, tracking is focused on persons for better conflict analysis; non-person threat items are less emphasized.
 - **Low-light / occlusion sensitivity** — YOLOv8n is a lightweight model. Detection quality degrades in poor lighting, heavy occlusion, or at long distances.
 - **No re-identification across sessions** — tracking IDs are local to a single run. The same person will get a new ID if the process restarts.
 
 ### Data and Storage
 - **All state is in-memory** — session scores, event timeline, and behavior history are lost when the process exits. There is no database or log file written at runtime.
-- **`ENABLE_BEEP` is defined twice in `config.py`** — the second definition (`True`) silently overrides the first (`False`). This can cause confusion when trying to disable audio.
 - **No persistent FPS log during runtime** — FPS data is only written to `saves/fps_data.csv` and `saves/fps_plot.png` at clean shutdown; a crash discards all FPS history.
 
 ### Infrastructure
@@ -233,4 +269,4 @@ During/after execution, these outputs can appear:
 - Integrate `PhoneBehaviorDetector` into the main loop.
 - Add persistent event storage (JSON/SQLite) and replay tools.
 - Add unit tests for detector logic (loitering/abandon/conflict/scoring).
-- Add CLI flags for runtime overrides instead of editing `config.py` directly.
+- Add runtime mode presets (e.g., conservative, balanced, aggressive) for easier tuning.

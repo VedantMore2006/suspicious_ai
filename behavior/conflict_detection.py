@@ -468,16 +468,19 @@ class ConflictDetector:
 
                 # ── Calm contact suppression ──
                 time_close = current_time - prev["close_since"]
+                is_separating = velocity > 10.0
+                is_struggling = area_changeA > 0.25 or area_changeB > 0.25
                 if (
                     abs(velocity) < config.CALM_VELOCITY_THRESHOLD and
                     time_close > config.CALM_CONTACT_TIME
+                    and not is_struggling
                 ):
                     prev["calm_contact"] = True
 
-                if pose_suppress:
+                if pose_suppress and not is_struggling:
                     prev["calm_contact"] = True
 
-                if conflict_boost or abs(velocity) > config.DISTANCE_VELOCITY_THRESHOLD * 2:
+                if conflict_boost or (abs(velocity) > config.DISTANCE_VELOCITY_THRESHOLD * 2 and not is_separating):
                     prev["calm_contact"] = False
 
                 # ── Per-pair confirmation ──

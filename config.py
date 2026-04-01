@@ -106,9 +106,10 @@ ACCELERATION_THRESHOLD = 40
 AREA_CHANGE_THRESHOLD = 0.20
 
 # Conflict confirmation — require sustained signal, not just N frames
-CONFLICT_CONFIRM_FRAMES = 5      # consecutive frames with raw signal before confirming
-CONFLICT_MIN_DURATION = 1.5      # seconds of sustained signal required (prevents flash false positives)
-CONFLICT_CALM_FRAMES = 5         # calm frames before resetting the confirm counter
+CONFLICT_CONFIRM_FRAMES = 3      # consecutive frames with raw signal before confirming
+CONFLICT_MIN_DURATION = 0.5      # seconds of sustained signal required (prevents flash false positives)
+CONFLICT_CALM_FRAMES = 18        # keep conflict memory through short tracker flicker/pauses
+FIGHT_SESSION_TRIGGER = 2.5      # proactive trigger: alert once pair session score crosses this
 
 # Calm contact suppression — handshake/hug: close together + low velocity sustained
 CALM_VELOCITY_THRESHOLD = 15     # px/s — below this while close = social contact, not conflict
@@ -122,6 +123,13 @@ HIP_TOLERANCE = 70       # px — wrist within this of own hip height → handsh
 # Relative wrist velocity threshold (pixels/second, body-motion corrected)
 # A wrist moving faster than this relative to the person's own hips → strike signal
 RELATIVE_WRIST_VEL_THRESHOLD = 60   # px/s — lower = more sensitive, raise if too many false positives
+
+# Proactive pose/interaction tuning
+TORSO_STRIKE_RADIUS_RATIO = 0.22    # torso strike zone radius relative to opponent bbox min dim
+FAST_TRACK_RAW_MULTIPLIER = 2.0     # raw relative wrist velocity multiple for immediate trigger
+FAST_TRACK_IMPACT_SCORE = 2.0       # instant pair-session boost when fast-track trigger occurs
+WINDUP_SHRINK_SPEED_THRESHOLD = 35  # px/s elbow-to-shoulder shrink speed for strike anticipation
+SYMMETRY_SCORE_THRESHOLD = 0.78     # high symmetry suggests social contact, not conflict
 
 # Keypoint visualisation
 SHOW_KEYPOINTS = True    # draw skeleton + strike-zone overlay (useful for tuning, disable in prod)

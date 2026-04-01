@@ -15,6 +15,8 @@ suspicious_ai/
 ├── plan.txt
 ├── project_extraction.txt
 ├── requirements.txt
+├── run_export.py
+├── test_video.py
 ├── yolov8n-pose.pt
 ├── yolov8n.onnx
 ├── yolov8n.pt
@@ -34,7 +36,11 @@ suspicious_ai/
 │   └── detector.py
 ├── saves/
 │   ├── fps_data.csv
-│   └── fps_plot.png
+│   ├── fps_plot.png
+│   ├── processed_video_20260401_141656.mkv
+│   ├── processed_video_20260401_143928.mkv
+│   ├── processed_video_20260401_165719.mkv
+│   └── processed_video_20260401_165827.mkv
 └── utils/
     ├── __init__.py
     ├── audio.py
@@ -217,65 +223,79 @@ def _pose_signals(personA, personB, rel_wrist_vel_A=None, rel_wrist_vel_B=None):
     suppress       = False
     fight_score    = 0.0
 
+    # debug_signals: per-person event labels for the drawing layer.
+    # Format: (person_ref, label_string) so drawing.py can attach to correct person.
+    signals_A = []
+    signals_B = []
+
     # ── Conflict signal 1: wrist of A near nose of B (strike zone) ──
     if nose_B and wrists_A:
-        for w in wrists_A:
-            if math.hypot(w[0] - nose_B[0], w[1] - nose_B[1]) < config.STRIKE_DISTANCE:
+        for w_idx, w in zip([_L_WRIST, _R_WRIST], [wL_A, wR_A]):
+            if w and math.hypot(w[0] - nose_B[0], w[1] - nose_B[1]) < config.STRIKE_DISTANCE:
                 conflict_boost = True
                 fight_score += 3.0
+                signals_A.append(f"KP{w_idx}→nose[B]: STRIKE ZONE")
 
     # ── Conflict signal 1 (reciprocal): wrist of B near nose of A ──
     if nose_A and wrists_B:
-        for w in wrists_B:
-            if math.hypot(w[0] - nose_A[0], w[1] - nose_A[1]) < config.STRIKE_DISTANCE:
+        for w_idx, w in zip([_L_WRIST, _R_WRIST], [wL_B, wR_B]):
+            if w and math.hypot(w[0] - nose_A[0], w[1] - nose_A[1]) < config.STRIKE_DISTANCE:
                 conflict_boost = True
                 fight_score += 3.0
+                signals_B.append(f"KP{w_idx}→nose[A]: STRIKE ZONE")
 
     # ── Conflict signal 2: wrist raised well above own shoulder ──
     if shoulders_A and wrists_A:
         avg_sh_y = sum(s[1] for s in shoulders_A) / len(shoulders_A)
-        if any(w[1] < avg_sh_y - 20 for w in wrists_A):
-            conflict_boost = True
-            fight_score += 1.5
+        for w_idx, w in zip([_L_WRIST, _R_WRIST], [wL_A, wR_A]):
+            if w and w[1] < avg_sh_y - 20:
+                conflict_boost = True
+                fight_score += 1.5
+                signals_A.append(f"KP{w_idx}<KP5/6: ARM RAISED")
 
     if shoulders_B and wrists_B:
         avg_sh_y = sum(s[1] for s in shoulders_B) / len(shoulders_B)
-        if any(w[1] < avg_sh_y - 20 for w in wrists_B):
-            conflict_boost = True
-            fight_score += 1.5
+        for w_idx, w in zip([_L_WRIST, _R_WRIST], [wL_B, wR_B]):
+            if w and w[1] < avg_sh_y - 20:
+                conflict_boost = True
+                fight_score += 1.5
+                signals_B.append(f"KP{w_idx}<KP5/6: ARM RAISED")
 
     # ── Conflict signal 3: high relative wrist velocity (body-motion corrected) ──
-    # Uses smoothed relative velocity to avoid false spikes from walking/running
     rel_vel_thresh = config.RELATIVE_WRIST_VEL_THRESHOLD
     if rel_wrist_vel_A is not None and rel_wrist_vel_A > rel_vel_thresh:
-        fight_score += min(rel_wrist_vel_A / rel_vel_thresh, 2.0)  # cap contribution
+        fight_score += min(rel_wrist_vel_A / rel_vel_thresh, 2.0)
         if rel_wrist_vel_A > rel_vel_thresh * 1.5:
             conflict_boost = True
+        signals_A.append(f"KP9/10 rel-vel: {rel_wrist_vel_A:.0f}px/s")
     if rel_wrist_vel_B is not None and rel_wrist_vel_B > rel_vel_thresh:
         fight_score += min(rel_wrist_vel_B / rel_vel_thresh, 2.0)
         if rel_wrist_vel_B > rel_vel_thresh * 1.5:
             conflict_boost = True
+        signals_B.append(f"KP9/10 rel-vel: {rel_wrist_vel_B:.0f}px/s")
 
     # ── Friendly signal: handshake — wrists near own hip level ──
     if hips_A and wrists_A:
         avg_hip_y = sum(h[1] for h in hips_A) / len(hips_A)
         if all(abs(w[1] - avg_hip_y) < config.HIP_TOLERANCE for w in wrists_A):
             suppress = True
+            signals_A.append("KP9/10≈KP11/12: HANDSHAKE SUPPRESS")
 
     if hips_B and wrists_B:
         avg_hip_y = sum(h[1] for h in hips_B) / len(hips_B)
         if all(abs(w[1] - avg_hip_y) < config.HIP_TOLERANCE for w in wrists_B):
             suppress = True
+            signals_B.append("KP9/10≈KP11/12: HANDSHAKE SUPPRESS")
 
     # A conflict boost always overrides a suppress signal
     if conflict_boost:
         suppress = False
-        fight_score = max(fight_score, 2.0)  # floor when boost is active
+        fight_score = max(fight_score, 2.0)
 
     if suppress:
         fight_score = 0.0
 
-    return conflict_boost, suppress, fight_score
+    return conflict_boost, suppress, fight_score, signals_A, signals_B
 
 
 class ConflictDetector:
@@ -405,8 +425,10 @@ class ConflictDetector:
         for p in persons:
             sk, sc, rv = self._smooth_person(
                 p["id"], p.get("keypoints"), p.get("kp_conf"), current_time)
-            p["_smooth_kp"]   = sk
-            p["_smooth_conf"] = sc
+            p["_smooth_kp"]      = sk
+            p["_smooth_conf"]    = sc
+            p["_rel_wrist_vel"]  = rv if rv is not None else 0.0
+            p["_signals"]        = []   # reset signal list each frame
             rel_wrist_vels[p["id"]] = rv
 
         any_confirmed  = False
@@ -460,11 +482,16 @@ class ConflictDetector:
                 area_changeB = abs(areaB - prev["prev_areaB"]) / (prev["prev_areaB"] + 1e-5)
 
                 # ── Pose-based signals (using smoothed keypoints + relative velocity) ──
-                conflict_boost, pose_suppress, fight_score = _pose_signals(
+                conflict_boost, pose_suppress, fight_score, sig_A, sig_B = _pose_signals(
                     persons[i], persons[j],
                     rel_wrist_vel_A=rel_wrist_vels.get(idA),
                     rel_wrist_vel_B=rel_wrist_vels.get(idB),
                 )
+                # Write signal labels back into person dicts for drawing layer
+                persons[i].setdefault("_signals", [])
+                persons[j].setdefault("_signals", [])
+                persons[i]["_signals"].extend(sig_A)
+                persons[j]["_signals"].extend(sig_B)
 
                 # ── Raw bbox conflict signal ──
                 bbox_conflict = (
@@ -910,6 +937,7 @@ RELATIVE_WRIST_VEL_THRESHOLD = 60   # px/s — lower = more sensitive, raise if 
 
 # Keypoint visualisation
 SHOW_KEYPOINTS = True    # draw skeleton + strike-zone overlay (useful for tuning, disable in prod)
+DEBUG_KEYPOINTS = True   # overlay KP indices, active signal labels, rel-wrist-vel value
 
 ================================================================================
 FILE: detection/__init__.py
@@ -1153,6 +1181,7 @@ import threading
 import queue
 import os
 import time
+import argparse
 from datetime import datetime
 
 from detection.detector import Detector
@@ -1173,6 +1202,30 @@ import config
 os.environ["QT_QPA_PLATFORM"] = "xcb"
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Suspicious behavior detection with live and offline modes."
+    )
+    parser.add_argument(
+        "--live",
+        action="store_true",
+        help="Use live camera feed (preview mode).",
+    )
+    parser.add_argument(
+        "--camera-id",
+        type=int,
+        default=0,
+        help="Camera index to use in live mode (default: 0).",
+    )
+    parser.add_argument(
+        "--source",
+        type=str,
+        default=None,
+        help="Override input source (video path or camera index as string).",
+    )
+    return parser.parse_args()
+
+
 def _reset_temporal_state(loiter_detector, abandon_detector, conflict_detector, scorer):
     """Clear time/history-dependent detector state after a seek jump."""
     if hasattr(loiter_detector, "person_state"):
@@ -1189,13 +1242,14 @@ def _reset_temporal_state(loiter_detector, abandon_detector, conflict_detector, 
 
 def inference_worker(cap, detector, loiter_detector, abandon_detector,
                      conflict_detector, scorer, result_queue, control_queue,
-                     stop_event):
+                     stop_event, completion_event):
     """
     Runs in a background thread.
     Captures frames, runs detection every DETECT_EVERY_N frames (reuses last
     result on skipped frames), runs behavior analysis on every frame, and
     pushes results into result_queue (maxsize=1, drop-on-full so display always
     gets the freshest result).
+    Signals completion_event when video is fully processed.
     """
     frame_count = 0
     last_tracked_objects = []
@@ -1242,6 +1296,8 @@ def inference_worker(cap, detector, loiter_detector, abandon_detector,
 
         ret, frame = cap.read()
         if not ret:
+            # Signal completion when all frames are processed
+            completion_event.set()
             break
 
         frame = cv2.resize(frame, (FRAME_WIDTH, FRAME_HEIGHT))
@@ -1286,7 +1342,25 @@ def inference_worker(cap, detector, loiter_detector, abandon_detector,
 
 
 def main():
-    cap = cv2.VideoCapture(CAMERA_SOURCE)
+    args = parse_args()
+
+    if args.source is not None:
+        camera_source = int(args.source) if args.source.isdigit() else args.source
+        mode_label = "CUSTOM"
+    elif args.live:
+        camera_source = args.camera_id
+        mode_label = "LIVE"
+    else:
+        camera_source = CAMERA_SOURCE
+        mode_label = "OFFLINE"
+
+    print(f"Starting in {mode_label} mode | source={camera_source}")
+
+    cap = cv2.VideoCapture(camera_source)
+    if not cap.isOpened():
+        print(f"Error: Unable to open source: {camera_source}")
+        return
+
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
 
@@ -1302,6 +1376,20 @@ def main():
     save_dir = "saves"
     os.makedirs(save_dir, exist_ok=True)
 
+    # Setup video writer for processed video export (MKV with H.264)
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    if fps <= 0:
+        fps = 30.0
+    output_video_filename = os.path.join(save_dir, f"processed_video_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mkv")
+    # Use FFMPEG codec for MKV format - more reliable than mp4v
+    fourcc = cv2.VideoWriter_fourcc(*'X264')  # H.264 codec for MKV
+    out = cv2.VideoWriter(output_video_filename, fourcc, fps, (WINDOW_WIDTH, WINDOW_HEIGHT))
+    if not out.isOpened():
+        # Fallback to MJPEG if H.264 is not available
+        fourcc = cv2.VideoWriter_fourcc(*'MJPG')
+        out = cv2.VideoWriter(output_video_filename, fourcc, fps, (WINDOW_WIDTH, WINDOW_HEIGHT))
+    print(f"Starting video export to: {output_video_filename}")
+
     fps_tracker = FPSTracker(save_dir=save_dir)
     object_positions = {}
     last_save_time = {}
@@ -1314,25 +1402,31 @@ def main():
     result_queue = queue.Queue(maxsize=1)
     control_queue = queue.Queue(maxsize=8)
     stop_event = threading.Event()
+    completion_event = threading.Event()  # Signal when video is fully processed
 
     worker = threading.Thread(
         target=inference_worker,
         args=(cap, detector, loiter_detector, abandon_detector,
-              conflict_detector, scorer, result_queue, control_queue, stop_event),
+              conflict_detector, scorer, result_queue, control_queue, stop_event, completion_event),
         daemon=True,
     )
     worker.start()
 
     last_result = None
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    video_seek_enabled = total_frames > 0
+    # Seeking is useful for offline debug playback, not live camera preview.
+    video_seek_enabled = (not args.live) and total_frames > 0
 
     while True:
         try:
             last_result = result_queue.get(timeout=0.1)
         except queue.Empty:
+            # If worker has finished and queue is empty, exit the display loop
+            if completion_event.is_set():
+                break
             if last_result is None:
                 continue  # Nothing to show yet
+            # Use last result if queue temporarily empty
 
         result = last_result
         frame = result["frame"]
@@ -1521,6 +1615,13 @@ def main():
             display_frame = cv2.resize(extended_frame, None, fx=DISPLAY_SCALE, fy=DISPLAY_SCALE)
 
         cv2.imshow(WINDOW_NAME, display_frame)
+        
+        # Write the processed frame to the output video
+        frame_to_write = extended_frame
+        if frame_to_write.shape[1] != WINDOW_WIDTH or frame_to_write.shape[0] != WINDOW_HEIGHT:
+            frame_to_write = cv2.resize(frame_to_write, (WINDOW_WIDTH, WINDOW_HEIGHT))
+        if out.isOpened():
+            out.write(frame_to_write)
 
         key = cv2.waitKeyEx(1)
         key_ascii = key & 0xFF
@@ -1531,9 +1632,13 @@ def main():
         if video_seek_enabled:
             seek_seconds = None
 
-            if key_ascii == ord('a') or key in (81, 2424832):  # left arrow
+            # Arrow key codes vary by OS/backend:
+            #   Linux X11/xcb: 65361 (left), 65363 (right)
+            #   Windows:       2424832 (left), 2555904 (right)
+            #   Some Linux:    81 (left), 83 (right) via waitKey low byte
+            if key_ascii == ord('a') or key in (65361, 81, 2424832):   # left arrow
                 seek_seconds = -SEEK_STEP_SECONDS
-            elif key_ascii == ord('d') or key in (83, 2555904):  # right arrow
+            elif key_ascii == ord('d') or key in (65363, 83, 2555904): # right arrow
                 seek_seconds = SEEK_STEP_SECONDS
 
             if seek_seconds is not None:
@@ -1550,12 +1655,107 @@ def main():
     stop_event.set()
     worker.join(timeout=2)
     fps_tracker.finalize()
+    
+    # Properly release and finalize the video writer
+    if out.isOpened():
+        out.release()
+    print(f"Video exported successfully to: {output_video_filename}")
+    print(f"Video file size: {os.path.getsize(output_video_filename) / (1024*1024):.1f} MB")
     cap.release()
     cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
     main()
+
+
+================================================================================
+FILE: run_export.py
+================================================================================
+
+#!/usr/bin/env python3
+import subprocess
+import time
+import os
+
+# Clean up old files
+os.system("rm -f /home/vedant/suspicious_ai/saves/processed_video_*.mkv")
+
+# Run main.py with logging
+starttime = time.time()
+proc = subprocess.Popen(
+    ["conda", "run", "-n", "project_env", "python", "main.py"],
+    stdout=subprocess.PIPE,
+    stderr=subprocess.STDOUT,
+    text=True,
+    bufsize=1
+)
+
+# Monitor output
+print("Starting video export process...\n")
+try:
+    for line in iter(proc.stdout.readline, ''):
+        if line:
+            if any(x in line for x in ['Starting', 'exported', 'completed', 'Error', 'error']):
+                print(f"[{time.time()-starttime:.1f}s] {line.strip()}")
+        
+        # Let it run for up to 150 seconds
+        if time.time() - starttime > 150:
+            proc.terminate()
+            print(f"\n[{time.time()-starttime:.1f}s] Timeout - terminating process")
+            break
+    
+    proc.wait(timeout=5)
+    print(f"\n[{time.time()-starttime:.1f}s] Process completed")
+except Exception as e:
+    proc.kill()
+    print(f"Process error: {e}")
+
+elapsed = time.time() - starttime
+print(f"\nTotal elapsed: {elapsed:.1f}s")
+
+# Check output file
+import glob
+mkv_files = glob.glob("/home/vedant/suspicious_ai/saves/processed_video_*.mkv")
+if mkv_files:
+    print(f"\n✓ Export file created:")
+    for f in mkv_files:
+        size = os.path.getsize(f) / (1024*1024)
+        print(f"  {os.path.basename(f)} ({size:.1f} MB)")
+else:
+    print("\n✗ No export file found")
+
+
+================================================================================
+FILE: test_video.py
+================================================================================
+
+import cv2
+import os
+
+file_path = "/home/vedant/suspicious_ai/saves/processed_video_20260331_000236.mkv"
+if os.path.exists(file_path):
+    cap = cv2.VideoCapture(file_path)
+    if cap.isOpened():
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        print(f"✓ MKV file is valid and readable")
+        print(f"  Frames: {frame_count}")
+        print(f"  FPS: {fps:.2f}")
+        print(f"  Resolution: {width}x{height}")
+        
+        # Try reading first frame
+        ret, frame = cap.read()
+        if ret:
+            print(f"✓ First frame read successfully")
+            print(f"  Frame shape: {frame.shape}")
+        cap.release()
+    else:
+        print("✗ Failed to open MKV file with OpenCV")
+else:
+    print("✗ File not found")
 
 
 ================================================================================
@@ -1625,7 +1825,32 @@ _SKELETON = [
     (12, 14), (14, 16),       # right leg
 ]
 
-# Per-keypoint colours (BGR) — arms bright, legs muted, face neutral
+# Which category each bone belongs to — drives color-coding in debug mode
+# "arm" = conflict-relevant, "face"/"torso"/"leg" = neutral
+_BONE_CATEGORY = {
+    (0, 1): "face",  (0, 2): "face",
+    (1, 3): "face",  (2, 4): "face",
+    (5, 6): "torso",
+    (5, 7): "arm",   (7, 9): "arm",
+    (6, 8): "arm",   (8, 10): "arm",
+    (5, 11): "torso", (6, 12): "torso",
+    (11, 12): "torso",
+    (11, 13): "leg",  (13, 15): "leg",
+    (12, 14): "leg",  (14, 16): "leg",
+}
+
+# Bone colors by category (BGR) — normal (inactive) state
+_BONE_COLORS_NORMAL = {
+    "face":  (90, 90, 90),
+    "arm":   (180, 180, 60),   # yellow-grey arms
+    "torso": (80, 80, 80),
+    "leg":   (60, 60, 60),
+}
+# Arm bones turn orange when arm-raised / strike-zone active
+_ARM_ACTIVE_COLOR  = (0, 140, 255)   # orange
+_ARM_SUPPRESS_COLOR = (0, 200, 80)   # green when suppressed (handshake)
+
+# Per-keypoint dot colours (BGR) — default state
 _KP_COLORS = {
     0:  (200, 200, 200),   # nose
     1:  (200, 200, 200),   # left eye
@@ -1636,8 +1861,8 @@ _KP_COLORS = {
     6:  (0, 255, 128),     # right shoulder
     7:  (0, 200, 255),     # left elbow
     8:  (0, 200, 255),     # right elbow
-    9:  (0, 60, 255),      # left wrist   ← highlighted
-    10: (0, 60, 255),      # right wrist  ← highlighted
+    9:  (0, 60, 255),      # left wrist   ← primary conflict signal
+    10: (0, 60, 255),      # right wrist  ← primary conflict signal
     11: (128, 0, 255),     # left hip
     12: (128, 0, 255),     # right hip
     13: (200, 128, 0),     # left knee
@@ -1646,21 +1871,35 @@ _KP_COLORS = {
     16: (200, 200, 0),     # right ankle
 }
 
+# Human-readable name for each COCO keypoint index
+_KP_NAMES = {
+    0: "nose",
+    1: "L-eye", 2: "R-eye",
+    3: "L-ear", 4: "R-ear",
+    5: "L-sho", 6: "R-sho",
+    7: "L-elb", 8: "R-elb",
+    9: "L-wri", 10: "R-wri",
+    11: "L-hip", 12: "R-hip",
+    13: "L-kne", 14: "R-kne",
+    15: "L-ank", 16: "R-ank",
+}
+
 
 def draw_keypoints(frame, obj, all_persons=None):
     """
     Draw skeleton, joint dots, and conflict-analysis overlays on `frame`.
 
-    obj         — tracked object dict with 'keypoints' (17,2) and 'kp_conf' (17,)
-    all_persons — list of other person dicts; used to colour wrists red when
-                  they are inside another person's strike zone.
+    obj         — tracked object dict with keypoints (17,2) and kp_conf (17,)
+    all_persons — list of all person dicts; used to detect wrists inside opponent strike zones
     """
-    kps  = obj.get("keypoints")
-    kpcs = obj.get("kp_conf")
+    # Prefer smoothed keypoints (written by ConflictDetector) for accuracy
+    kps  = obj.get("_smooth_kp") if obj.get("_smooth_kp") is not None else obj.get("keypoints")
+    kpcs = obj.get("_smooth_conf") if obj.get("_smooth_conf") is not None else obj.get("kp_conf")
     if kps is None or kpcs is None:
         return
 
     threshold = config.KP_CONF_MIN
+    debug = getattr(config, "DEBUG_KEYPOINTS", False)
 
     def pt(idx):
         """Return integer (x, y) if confidence is sufficient, else None."""
@@ -1668,30 +1907,63 @@ def draw_keypoints(frame, obj, all_persons=None):
             return (int(kps[idx][0]), int(kps[idx][1]))
         return None
 
-    # ── 1. Skeleton lines ──────────────────────────────────────────────
-    for a, b in _SKELETON:
-        pa, pb = pt(a), pt(b)
-        if pa and pb:
-            cv2.line(frame, pa, pb, (80, 80, 80), 1, cv2.LINE_AA)
+    # ── Active signal state for this person ──
+    active_signals = obj.get("_signals", [])
+    rel_wrist_vel  = obj.get("_rel_wrist_vel", 0.0)
+    arm_raised     = any("ARM RAISED"   in s for s in active_signals)
+    strike_self    = any("STRIKE ZONE"  in s for s in active_signals)
+    suppressed     = any("SUPPRESS"     in s for s in active_signals)
 
-    # ── 2. Collect nose positions of all OTHER persons for strike-zone check ──
+    # ── Collect nose positions of all OTHER persons for strike-zone check ──
     other_noses = []
     if all_persons:
         for other in all_persons:
             if other is obj:
                 continue
-            okps  = other.get("keypoints")
-            okpcs = other.get("kp_conf")
+            okps  = other.get("_smooth_kp") if other.get("_smooth_kp") is not None else other.get("keypoints")
+            okpcs = other.get("_smooth_conf") if other.get("_smooth_conf") is not None else other.get("kp_conf")
             if okps is not None and okpcs is not None and okpcs[0] >= threshold:
                 other_noses.append((float(okps[0][0]), float(okps[0][1])))
 
-    # ── 3. Strike-zone circle around THIS person's nose ──────────────
+    # Determine per-wrist strike-zone state
+    wrist_in_strike = {}
+    for wrist_idx in (9, 10):
+        if kpcs[wrist_idx] < threshold:
+            wrist_in_strike[wrist_idx] = False
+            continue
+        px, py = float(kps[wrist_idx][0]), float(kps[wrist_idx][1])
+        wrist_in_strike[wrist_idx] = any(
+            math.hypot(px - nx, py - ny) < config.STRIKE_DISTANCE
+            for nx, ny in other_noses
+        )
+
+    any_wrist_strike = any(wrist_in_strike.values())
+
+    # ── 1. Skeleton lines ─────────────────────────────────────────────────
+    for a, b in _SKELETON:
+        pa, pb = pt(a), pt(b)
+        if not (pa and pb):
+            continue
+        cat = _BONE_CATEGORY.get((a, b), "torso")
+        if cat == "arm":
+            if suppressed:
+                color = _ARM_SUPPRESS_COLOR
+            elif arm_raised or any_wrist_strike:
+                color = _ARM_ACTIVE_COLOR
+            else:
+                color = _BONE_COLORS_NORMAL["arm"]
+        else:
+            color = _BONE_COLORS_NORMAL[cat]
+        thickness = 2 if cat == "arm" else 1
+        cv2.line(frame, pa, pb, color, thickness, cv2.LINE_AA)
+
+    # ── 2. Strike-zone circle around THIS person's nose ───────────────────
     nose = pt(0)
     if nose:
         cv2.circle(frame, nose, config.STRIKE_DISTANCE,
                    (0, 140, 255), 1, cv2.LINE_AA)   # orange ring
 
-    # ── 4. Keypoint dots ──────────────────────────────────────────────
+    # ── 3. Keypoint dots ──────────────────────────────────────────────────
     for idx in range(17):
         p = pt(idx)
         if not p:
@@ -1699,20 +1971,64 @@ def draw_keypoints(frame, obj, all_persons=None):
 
         color = _KP_COLORS.get(idx, (180, 180, 180))
 
-        # Wrists: check if inside any opponent's strike zone → paint red
-        if idx in (9, 10) and other_noses:
-            px, py = float(kps[idx][0]), float(kps[idx][1])
-            in_strike = any(
-                math.hypot(px - nx, py - ny) < config.STRIKE_DISTANCE
-                for nx, ny in other_noses
-            )
-            if in_strike:
-                color = (0, 0, 255)   # bright red — strike zone active
-                # Draw a pulsing ring around the wrist for visibility
-                cv2.circle(frame, p, 10, (0, 0, 255), 2, cv2.LINE_AA)
+        # Wrists: red + ring when inside opponent strike zone
+        if idx in (9, 10) and wrist_in_strike.get(idx, False):
+            color = (0, 0, 255)
+            cv2.circle(frame, p, 12, (0, 0, 255), 2, cv2.LINE_AA)
 
-        radius = 5 if idx in (9, 10) else 3   # wrists slightly bigger
+        radius = 5 if idx in (9, 10) else 3
         cv2.circle(frame, p, radius, color, -1, cv2.LINE_AA)
+
+        # ── DEBUG: index number + short name next to each joint ───────────
+        if debug:
+            label = f"{idx}:{_KP_NAMES[idx]}"
+            # Offset label slightly to avoid overlapping the dot
+            lx = p[0] + 7
+            ly = p[1] - 4
+            # Thin black shadow first for readability
+            cv2.putText(frame, label, (lx + 1, ly + 1),
+                        cv2.FONT_HERSHEY_PLAIN, 0.75, (0, 0, 0), 1, cv2.LINE_AA)
+            cv2.putText(frame, label, (lx, ly),
+                        cv2.FONT_HERSHEY_PLAIN, 0.75, (220, 220, 220), 1, cv2.LINE_AA)
+
+    # ── 4. DEBUG: active signal labels above the person ───────────────────
+    if debug and active_signals:
+        # Find topmost visible keypoint to place labels above the person
+        all_pts = [pt(i) for i in range(17)]
+        visible = [p for p in all_pts if p is not None]
+        if visible:
+            top_y = min(p[1] for p in visible) - 10
+            top_x = min(p[0] for p in visible)
+
+            for line_idx, sig in enumerate(active_signals):
+                # Color label by signal type
+                if "STRIKE" in sig:
+                    sig_color = (0, 0, 255)       # red
+                elif "ARM RAISED" in sig:
+                    sig_color = (0, 140, 255)     # orange
+                elif "SUPPRESS" in sig:
+                    sig_color = (0, 200, 80)      # green
+                elif "rel-vel" in sig:
+                    sig_color = (0, 220, 220)     # yellow
+                else:
+                    sig_color = (200, 200, 200)
+
+                ly = top_y - line_idx * 16
+                cv2.putText(frame, sig, (top_x + 1, ly + 1),
+                            cv2.FONT_HERSHEY_PLAIN, 0.85, (0, 0, 0), 2, cv2.LINE_AA)
+                cv2.putText(frame, sig, (top_x, ly),
+                            cv2.FONT_HERSHEY_PLAIN, 0.85, sig_color, 1, cv2.LINE_AA)
+
+    # ── 5. DEBUG: rel-wrist-vel bar (even without active signals) ─────────
+    if debug and rel_wrist_vel is not None:
+        nose_or_top = pt(0)
+        if nose_or_top:
+            bar_x = nose_or_top[0]
+            bar_y = nose_or_top[1] - config.STRIKE_DISTANCE - 20
+            vel_label = f"relV:{rel_wrist_vel:.0f}"
+            bar_color = (0, 0, 255) if rel_wrist_vel > config.RELATIVE_WRIST_VEL_THRESHOLD else (120, 120, 120)
+            cv2.putText(frame, vel_label, (bar_x - 20, bar_y),
+                        cv2.FONT_HERSHEY_PLAIN, 0.8, bar_color, 1, cv2.LINE_AA)
 
 
 def setup_window():
@@ -1868,5 +2184,5 @@ def distance(p1, p2):
     return math.hypot(p1[0] - p2[0], p1[1] - p2[1])
 
 ================================================================================
-SUMMARY: 20 Python files extracted
+SUMMARY: 22 Python files extracted
 ================================================================================

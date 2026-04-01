@@ -4,6 +4,7 @@ import threading
 import queue
 import os
 import time
+import argparse
 from datetime import datetime
 
 from detection.detector import Detector
@@ -24,6 +25,30 @@ import config
 os.environ["QT_QPA_PLATFORM"] = "xcb"
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Suspicious behavior detection with live and offline modes."
+    )
+    parser.add_argument(
+        "--live",
+        action="store_true",
+        help="Use live camera feed (preview mode).",
+    )
+    parser.add_argument(
+        "--camera-id",
+        type=int,
+        default=0,
+        help="Camera index to use in live mode (default: 0).",
+    )
+    parser.add_argument(
+        "--source",
+        type=str,
+        default=None,
+        help="Override input source (video path or camera index as string).",
+    )
+    return parser.parse_args()
+
+
 def _reset_temporal_state(loiter_detector, abandon_detector, conflict_detector, scorer):
     """Clear time/history-dependent detector state after a seek jump."""
     if hasattr(loiter_detector, "person_state"):
@@ -40,13 +65,14 @@ def _reset_temporal_state(loiter_detector, abandon_detector, conflict_detector, 
 
 def inference_worker(cap, detector, loiter_detector, abandon_detector,
                      conflict_detector, scorer, result_queue, control_queue,
-                     stop_event):
+                     stop_event, completion_event):
     """
     Runs in a background thread.
     Captures frames, runs detection every DETECT_EVERY_N frames (reuses last
     result on skipped frames), runs behavior analysis on every frame, and
     pushes results into result_queue (maxsize=1, drop-on-full so display always
     gets the freshest result).
+    Signals completion_event when video is fully processed.
     """
     frame_count = 0
     last_tracked_objects = []
@@ -93,6 +119,8 @@ def inference_worker(cap, detector, loiter_detector, abandon_detector,
 
         ret, frame = cap.read()
         if not ret:
+            # Signal completion when all frames are processed
+            completion_event.set()
             break
 
         frame = cv2.resize(frame, (FRAME_WIDTH, FRAME_HEIGHT))
@@ -137,7 +165,25 @@ def inference_worker(cap, detector, loiter_detector, abandon_detector,
 
 
 def main():
-    cap = cv2.VideoCapture(CAMERA_SOURCE)
+    args = parse_args()
+
+    if args.source is not None:
+        camera_source = int(args.source) if args.source.isdigit() else args.source
+        mode_label = "CUSTOM"
+    elif args.live:
+        camera_source = args.camera_id
+        mode_label = "LIVE"
+    else:
+        camera_source = CAMERA_SOURCE
+        mode_label = "OFFLINE"
+
+    print(f"Starting in {mode_label} mode | source={camera_source}")
+
+    cap = cv2.VideoCapture(camera_source)
+    if not cap.isOpened():
+        print(f"Error: Unable to open source: {camera_source}")
+        return
+
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
 
@@ -153,6 +199,20 @@ def main():
     save_dir = "saves"
     os.makedirs(save_dir, exist_ok=True)
 
+    # Setup video writer for processed video export (MKV with H.264)
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    if fps <= 0:
+        fps = 30.0
+    output_video_filename = os.path.join(save_dir, f"processed_video_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mkv")
+    # Use FFMPEG codec for MKV format - more reliable than mp4v
+    fourcc = cv2.VideoWriter_fourcc(*'X264')  # H.264 codec for MKV
+    out = cv2.VideoWriter(output_video_filename, fourcc, fps, (WINDOW_WIDTH, WINDOW_HEIGHT))
+    if not out.isOpened():
+        # Fallback to MJPEG if H.264 is not available
+        fourcc = cv2.VideoWriter_fourcc(*'MJPG')
+        out = cv2.VideoWriter(output_video_filename, fourcc, fps, (WINDOW_WIDTH, WINDOW_HEIGHT))
+    print(f"Starting video export to: {output_video_filename}")
+
     fps_tracker = FPSTracker(save_dir=save_dir)
     object_positions = {}
     last_save_time = {}
@@ -165,25 +225,31 @@ def main():
     result_queue = queue.Queue(maxsize=1)
     control_queue = queue.Queue(maxsize=8)
     stop_event = threading.Event()
+    completion_event = threading.Event()  # Signal when video is fully processed
 
     worker = threading.Thread(
         target=inference_worker,
         args=(cap, detector, loiter_detector, abandon_detector,
-              conflict_detector, scorer, result_queue, control_queue, stop_event),
+              conflict_detector, scorer, result_queue, control_queue, stop_event, completion_event),
         daemon=True,
     )
     worker.start()
 
     last_result = None
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    video_seek_enabled = total_frames > 0
+    # Seeking is useful for offline debug playback, not live camera preview.
+    video_seek_enabled = (not args.live) and total_frames > 0
 
     while True:
         try:
             last_result = result_queue.get(timeout=0.1)
         except queue.Empty:
+            # If worker has finished and queue is empty, exit the display loop
+            if completion_event.is_set():
+                break
             if last_result is None:
                 continue  # Nothing to show yet
+            # Use last result if queue temporarily empty
 
         result = last_result
         frame = result["frame"]
@@ -372,6 +438,13 @@ def main():
             display_frame = cv2.resize(extended_frame, None, fx=DISPLAY_SCALE, fy=DISPLAY_SCALE)
 
         cv2.imshow(WINDOW_NAME, display_frame)
+        
+        # Write the processed frame to the output video
+        frame_to_write = extended_frame
+        if frame_to_write.shape[1] != WINDOW_WIDTH or frame_to_write.shape[0] != WINDOW_HEIGHT:
+            frame_to_write = cv2.resize(frame_to_write, (WINDOW_WIDTH, WINDOW_HEIGHT))
+        if out.isOpened():
+            out.write(frame_to_write)
 
         key = cv2.waitKeyEx(1)
         key_ascii = key & 0xFF
@@ -405,6 +478,12 @@ def main():
     stop_event.set()
     worker.join(timeout=2)
     fps_tracker.finalize()
+    
+    # Properly release and finalize the video writer
+    if out.isOpened():
+        out.release()
+    print(f"Video exported successfully to: {output_video_filename}")
+    print(f"Video file size: {os.path.getsize(output_video_filename) / (1024*1024):.1f} MB")
     cap.release()
     cv2.destroyAllWindows()
 

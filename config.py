@@ -90,7 +90,7 @@ ALERT_BANNER_DURATION = 3  # seconds
 # AUDIO CONFIGURATION
 # ===============================
 
-ENABLE_BEEP = True
+ENABLE_BEEP = False
 ALERT_SOUND_PATH = "/home/vedant/suspicious_ai/assets/alert.mp3"
 AUDIO_VOLUME = 0.8
 
@@ -133,4 +133,4 @@ SYMMETRY_SCORE_THRESHOLD = 0.78     # high symmetry suggests social contact, not
 
 # Keypoint visualisation
 SHOW_KEYPOINTS = True    # draw skeleton + strike-zone overlay (useful for tuning, disable in prod)
-DEBUG_KEYPOINTS = True   # overlay KP indices, active signal labels, rel-wrist-vel value
+DEBUG_KEYPOINTS = False   # overlay KP indices, active signal labels, rel-wrist-vel value

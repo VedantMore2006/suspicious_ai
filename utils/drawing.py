@@ -97,6 +97,13 @@ def draw_keypoints(frame, obj, all_persons=None):
             return (int(kps[idx][0]), int(kps[idx][1]))
         return None
 
+    def head_radius(person):
+        bbox = person.get("bbox")
+        if not bbox:
+            return 15.0
+        x1, y1, x2, y2 = bbox
+        return max(15.0, (y2 - y1) * 0.12)
+
     # ── Active signal state for this person ──
     active_signals = obj.get("_signals", [])
     rel_wrist_vel  = obj.get("_rel_wrist_vel", 0.0)
@@ -106,6 +113,7 @@ def draw_keypoints(frame, obj, all_persons=None):
 
     # ── Collect nose positions of all OTHER persons for strike-zone check ──
     other_noses = []
+    other_head_radii = []
     if all_persons:
         for other in all_persons:
             if other is obj:
@@ -114,6 +122,7 @@ def draw_keypoints(frame, obj, all_persons=None):
             okpcs = other.get("_smooth_conf") if other.get("_smooth_conf") is not None else other.get("kp_conf")
             if okps is not None and okpcs is not None and okpcs[0] >= threshold:
                 other_noses.append((float(okps[0][0]), float(okps[0][1])))
+                other_head_radii.append(head_radius(other))
 
     # Determine per-wrist strike-zone state
     wrist_in_strike = {}
@@ -123,8 +132,8 @@ def draw_keypoints(frame, obj, all_persons=None):
             continue
         px, py = float(kps[wrist_idx][0]), float(kps[wrist_idx][1])
         wrist_in_strike[wrist_idx] = any(
-            math.hypot(px - nx, py - ny) < config.STRIKE_DISTANCE
-            for nx, ny in other_noses
+            math.hypot(px - nx, py - ny) < nr
+            for (nx, ny), nr in zip(other_noses, other_head_radii)
         )
 
     any_wrist_strike = any(wrist_in_strike.values())
@@ -150,7 +159,7 @@ def draw_keypoints(frame, obj, all_persons=None):
     # ── 2. Strike-zone circle around THIS person's nose ───────────────────
     nose = pt(0)
     if nose:
-        cv2.circle(frame, nose, config.STRIKE_DISTANCE,
+        cv2.circle(frame, nose, int(head_radius(obj)),
                    (0, 140, 255), 1, cv2.LINE_AA)   # orange ring
 
     # ── 3. Keypoint dots ──────────────────────────────────────────────────
@@ -214,7 +223,7 @@ def draw_keypoints(frame, obj, all_persons=None):
         nose_or_top = pt(0)
         if nose_or_top:
             bar_x = nose_or_top[0]
-            bar_y = nose_or_top[1] - config.STRIKE_DISTANCE - 20
+            bar_y = nose_or_top[1] - int(head_radius(obj)) - 20
             vel_label = f"relV:{rel_wrist_vel:.0f}"
             bar_color = (0, 0, 255) if rel_wrist_vel > config.RELATIVE_WRIST_VEL_THRESHOLD else (120, 120, 120)
             cv2.putText(frame, vel_label, (bar_x - 20, bar_y),

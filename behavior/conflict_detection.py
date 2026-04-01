@@ -201,13 +201,14 @@ def _pose_signals(
     # ── Symmetry heuristic: mirrored/similar movement is often non-violent contact ──
     if rel_wrist_vel_A is not None and rel_wrist_vel_B is not None:
         hi = max(rel_wrist_vel_A, rel_wrist_vel_B, 1e-6)
-        lo = min(rel_wrist_vel_A, rel_wrist_vel_B)
-        symmetry = lo / hi
-        if symmetry >= config.SYMMETRY_SCORE_THRESHOLD and not fast_track and not conflict_boost:
-            suppress = True
-            fight_score = max(0.0, fight_score - 0.8)
-            signals_A.append(f"SYNC: {symmetry:.2f}")
-            signals_B.append(f"SYNC: {symmetry:.2f}")
+        if hi > 20.0:
+            lo = min(rel_wrist_vel_A, rel_wrist_vel_B)
+            symmetry = lo / hi
+            if symmetry >= config.SYMMETRY_SCORE_THRESHOLD and not fast_track and not conflict_boost:
+                suppress = True
+                fight_score = max(0.0, fight_score - 0.8)
+                signals_A.append(f"SYNC: {symmetry:.2f}")
+                signals_B.append(f"SYNC: {symmetry:.2f}")
 
     # A conflict boost always overrides a suppress signal
     if conflict_boost:
@@ -254,6 +255,7 @@ class ConflictDetector:
                 "prev_wrist":  None,   # average wrist position
                 "prev_hip":    None,   # average hip position
                 "prev_time":   current_time,
+                "last_seen_active": current_time,
                 "rel_wrist_vel": 0.0,
                 "raw_rel_wrist_vel": 0.0,
                 "prev_arm_dist": None,
@@ -344,6 +346,7 @@ class ConflictDetector:
         state["smooth_kp"]     = new_smooth_kp
         state["smooth_conf"]   = new_smooth_conf
         state["prev_time"]     = current_time
+        state["last_seen_active"] = current_time
         state["rel_wrist_vel"] = rel_wrist_vel
         state["raw_rel_wrist_vel"] = raw_rel_wrist_vel
         state["windup_speed"] = windup_speed
@@ -363,11 +366,6 @@ class ConflictDetector:
                     p["id"], p.get("keypoints"), p.get("kp_conf"), current_time)
                 p["_smooth_kp"]   = sk
                 p["_smooth_conf"] = sc
-            # Clean up person state for IDs no longer tracked
-            active_ids = {p["id"] for p in persons}
-            for k in [k for k in self.person_kp if k not in active_ids]:
-                del self.person_kp[k]
-            return False, {}
 
         current_time = video_timestamp if video_timestamp is not None else time.time()
 
@@ -416,6 +414,7 @@ class ConflictDetector:
                         "prev_areaA":     areaA,
                         "prev_areaB":     areaB,
                         "prev_time":      current_time,
+                        "last_seen_active": current_time,
                         "confirm_count":  0,
                         "calm_count":     0,
                         "conflict_start": None,
@@ -520,14 +519,19 @@ class ConflictDetector:
                 prev["prev_areaA"]    = areaA
                 prev["prev_areaB"]    = areaB
                 prev["prev_time"]     = current_time
+                prev["last_seen_active"] = current_time
 
-        # Clean up pairs that left proximity
-        for k in [k for k in self.history if k not in active_pairs]:
-            del self.history[k]
+        # Clean up pairs that left proximity after a short grace period.
+        for k in list(self.history.keys()):
+            if k not in active_pairs:
+                if current_time - self.history[k].get("last_seen_active", self.history[k]["prev_time"]) > 1.5:
+                    del self.history[k]
 
-        # Clean up person state for IDs no longer tracked
+        # Clean up person state after a short grace period so flickering IDs can recover.
         active_person_ids = {p["id"] for p in persons}
-        for k in [k for k in self.person_kp if k not in active_person_ids]:
-            del self.person_kp[k]
+        for k in list(self.person_kp.keys()):
+            if k not in active_person_ids:
+                if current_time - self.person_kp[k].get("last_seen_active", self.person_kp[k]["prev_time"]) > 1.5:
+                    del self.person_kp[k]
 
         return any_confirmed, pair_scores

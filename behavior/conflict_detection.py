@@ -468,8 +468,12 @@ class ConflictDetector:
 
                 # ── Calm contact suppression ──
                 time_close = current_time - prev["close_since"]
-                is_separating = velocity > 10.0
+                is_separating = velocity > 15.0  # Tweak: slightly higher threshold for a clean separation
                 is_struggling = area_changeA > 0.25 or area_changeB > 0.25
+
+                # Capture the state before we modify it.
+                was_calm = prev["calm_contact"]
+
                 if (
                     abs(velocity) < config.CALM_VELOCITY_THRESHOLD and
                     time_close > config.CALM_CONTACT_TIME
@@ -480,8 +484,14 @@ class ConflictDetector:
                 if pose_suppress and not is_struggling:
                     prev["calm_contact"] = True
 
-                if conflict_boost or (abs(velocity) > config.DISTANCE_VELOCITY_THRESHOLD * 2 and not is_separating):
+                # The fix: only allow pose-based conflict to break calm state if they are not stepping back.
+                if (conflict_boost and not is_separating) or (abs(velocity) > config.DISTANCE_VELOCITY_THRESHOLD * 2 and not is_separating):
                     prev["calm_contact"] = False
+
+                # Grace period: if they were calm and are currently separating, enforce the calm state.
+                if was_calm and is_separating:
+                    prev["calm_contact"] = True
+                    fight_score = 0.0  # Zero out temporary threat spikes from arm retraction.
 
                 # ── Per-pair confirmation ──
                 if raw_conflict and not prev["calm_contact"]:

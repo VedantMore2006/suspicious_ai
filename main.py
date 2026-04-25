@@ -151,8 +151,10 @@ def inference_worker(cap, detector, loiter_detector, abandon_detector,
             "suspicious_ids":  suspicious_ids,
             "suspicious_bags": suspicious_bags,
             "conflict_alert":  conflict_alert,
-            "instant_scores":  instant_scores,
-            "session_scores":  session_scores,
+            # Send per-frame snapshots so display thread does not iterate
+            # over dicts that are being mutated by the worker thread.
+            "instant_scores":  dict(instant_scores),
+            "session_scores":  dict(session_scores),
             "seek_applied":    seek_applied,
         }
 

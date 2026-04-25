@@ -46,7 +46,7 @@ IMG_SIZE = 320  # reduced from 416 for CPU performance (~40% faster inference)
 
 # Frame skipping: run full detection every N frames; intermediate frames reuse last result.
 # N=1 = no skipping. N=2 roughly doubles display FPS on CPU (10 FPS detect → ~17 FPS display).
-DETECT_EVERY_N = 2
+DETECT_EVERY_N = 1
 
 # Classes (COCO indices)
 PERSON = 0
@@ -122,7 +122,7 @@ HIP_TOLERANCE = 70       # px — wrist within this of own hip height → handsh
 
 # Relative wrist velocity threshold (pixels/second, body-motion corrected)
 # A wrist moving faster than this relative to the person's own hips → strike signal
-RELATIVE_WRIST_VEL_THRESHOLD = 60   # px/s — lower = more sensitive, raise if too many false positives
+RELATIVE_WRIST_VEL_THRESHOLD = 80   # px/s — lower = more sensitive, raise if too many false positives
 
 # Proactive pose/interaction tuning
 TORSO_STRIKE_RADIUS_RATIO = 0.22    # torso strike zone radius relative to opponent bbox min dim
